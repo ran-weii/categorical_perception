@@ -23,9 +23,9 @@ class ConditionalGaussian(nn.Module):
         self.batch_norm = batch_norm
         self.eps = 1e-6
         
-        # self.mu = nn.Parameter(torch.randn(1, z_dim, x_dim), requires_grad=True)
-        # self.lv = nn.Parameter(torch.randn(1, z_dim, x_dim), requires_grad=True)
-        # self.tl = nn.Parameter(torch.randn(1, z_dim, x_dim, x_dim), requires_grad=True)
+        self.mu = nn.Parameter(torch.randn(1, z_dim, x_dim), requires_grad=True)
+        self.lv = nn.Parameter(torch.randn(1, z_dim, x_dim), requires_grad=True)
+        self.tl = nn.Parameter(torch.randn(1, z_dim, x_dim, x_dim), requires_grad=True)
         
         nn.init.normal_(self.mu, mean=0, std=1)
         nn.init.normal_(self.lv, mean=0, std=0.01)
@@ -40,9 +40,9 @@ class ConditionalGaussian(nn.Module):
             self.bn = BatchNormTransform(x_dim, momentum=0.1, affine=False)
         
     def __repr__(self):
-        s = "{}(x_dim={}, z_dim={}, cov={}, batch_norm={}, use_tanh={})".format(
+        s = "{}(x_dim={}, z_dim={}, cov={}, batch_norm={})".format(
             self.__class__.__name__, self.x_dim, self.z_dim, self.cov, 
-            self.batch_norm, self.use_tanh
+            self.batch_norm
         )
         return s
     
@@ -62,8 +62,6 @@ class ConditionalGaussian(nn.Module):
         transforms = []
         if self.batch_norm:
             transforms.append(self.bn)
-        if self.use_tanh:
-            transforms.append(self.tanh_transform)
         distribution = SimpleTransformedModule(distribution, transforms)
         return distribution
     
