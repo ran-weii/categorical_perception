@@ -112,12 +112,11 @@ class QMDPLayer(jit.ScriptModule):
     
     @jit.script_method
     def update_cell(
-        self, logp_o: Tensor, logp_u: Tensor, b: Tensor, a: Tensor, 
+        self, logp_o: Tensor, u: Tensor, b: Tensor, 
         transition: Tensor, value: Tensor
         ) -> Tuple[Tensor, Tensor]:
         """ Compute action and state posterior. Then compute the next action distribution """
-        a_post = self.update_action(logp_u, a)
-        b_post = self.update_belief(logp_o, transition, b, a_post)
+        b_post = self.update_belief(logp_o, transition, b, u)
         a_next = self.plan(b_post, value)
         return (b_post, a_next)
     
@@ -130,13 +129,13 @@ class QMDPLayer(jit.ScriptModule):
         return b, a
     
     def forward(
-        self, logp_o: Tensor, logp_u: Union[Tensor, None], reward: Tensor,
+        self, logp_o: Tensor, u: Union[Tensor, None], reward: Tensor,
         b: Union[Tensor, None], a: Union[Tensor, None]
         ) -> Tuple[Tensor, Tensor]:
         """
         Args:
             logp_o (torch.tensor): sequence of observation probabilities. size=[T, batch_size, state_dim]
-            logp_u (torch.tensor): sequence of control probabilities. Should be offset -1 if b is None.
+            u (torch.tensor): sequence of control probabilities. Should be offset -1 if b is None.
                 size=[T, batch_size, act_dim]
             reward (torch.tensor): reward matrix. size=[batch_size, act_dim, state_dim]
             b ([torch.tensor, None], optional): prior belief. size=[batch_size, state_dim]
@@ -158,8 +157,8 @@ class QMDPLayer(jit.ScriptModule):
                 alpha_b[t+1], alpha_a[t+1] = self.init_hidden(logp_o[t], value)
             else:
                 alpha_b[t+1], alpha_a[t+1] = self.update_cell(
-                    logp_o[t], logp_u[t+t_offset], 
-                    alpha_b[t], alpha_a[t], transition, value
+                    logp_o[t], u[t+t_offset], 
+                    alpha_b[t], transition, value
                 )
         return torch.stack(alpha_b[1:]), torch.stack(alpha_a[1:])
 
