@@ -1,0 +1,4 @@
+*.pyc
+*.sh
+*.ipynb
+src.egg-info/*
