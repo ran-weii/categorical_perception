@@ -59,7 +59,7 @@ class SAC(Model):
         gamma=0.9, beta=0.2, polyak=0.995, norm_obs=False,
         buffer_size=int(1e6), batch_size=100, a_batch_size=32, 
         rnn_len=10, a_steps=50, 
-        lr_a=1e-3, lr_c=1e-3, decay=0, grad_clip=None
+        lr_a=1e-3, lr_c=1e-3, decay=0, grad_clip=None, obs_penalty=1.
         ):
         """
         Args:
@@ -91,6 +91,7 @@ class SAC(Model):
         self.lr = lr_a
         self.decay = decay
         self.grad_clip = grad_clip
+        self.obs_penalty = obs_penalty
 
         self.agent = agent
 
@@ -173,7 +174,7 @@ class SAC(Model):
             q_next = torch.min(q1_next, q2_next)
             v_next = torch.logsumexp(q_next, dim=-1, keepdim=True)
             q_target = r + (1 - done) * self.gamma * v_next
-
+        
         q1, q2 = self.critic(torch.cat([state, obs_norm], dim=-1))
         q1 = torch.gather(q1, -1, ctl.long())
         q2 = torch.gather(q2, -1, ctl.long())
@@ -201,6 +202,17 @@ class SAC(Model):
         a_loss = kl_divergence(alpha_a, a_target)#.mean()
         a_loss = torch.sum(a_loss * mask) / (mask.sum() + 1e-6)
         return a_loss
+    
+    def compute_obs_loss(self):
+        batch = self.replay_buffer.sample_episodes(self.a_batch_size, self.rnn_len, prioritize=False)
+        pad_batch, mask = batch
+        obs = pad_batch["obs"].to(self.device)
+        ctl = pad_batch["ctl"].to(self.device)
+        
+        out = self.agent(obs, ctl)
+        obs_loss, _ = self.agent.obs_loss(obs, ctl, mask, out)
+        obs_loss = obs_loss.mean()
+        return obs_loss
 
     def take_gradient_step(self, logger=None):
         self.critic.train()
@@ -209,6 +221,7 @@ class SAC(Model):
         
         critic_loss_epoch = []
         actor_loss_epoch = []
+        obs_loss_epoch = []
         for i in range(self.a_steps):
             # train critic
             critic_loss = self.compute_critic_loss()
@@ -223,7 +236,9 @@ class SAC(Model):
 
             # train actor
             actor_loss = self.compute_actor_loss()
-            actor_loss.backward()
+            obs_loss = self.compute_obs_loss()
+            actor_total_loss = actor_loss + self.obs_penalty * obs_loss
+            actor_total_loss.backward()
             if self.grad_clip is not None:
                 nn.utils.clip_grad_norm_(self.agent.parameters(), self.grad_clip)
             self.actor_optimizer.step()
@@ -231,6 +246,7 @@ class SAC(Model):
             self.critic_optimizer.zero_grad()
 
             actor_loss_epoch.append(actor_loss.data.item())
+            obs_loss_epoch.append(obs_loss.data.item())
             
             # update target networks
             with torch.no_grad():
@@ -243,13 +259,18 @@ class SAC(Model):
             if logger is not None:
                 logger.push({
                     "critic_loss": critic_loss.data.item(),
-                    "actor_loss": actor_loss.data.item()
+                    "actor_loss": actor_loss.data.item(),
+                    "obs_loss": obs_loss.cpu().data.item(),
                 })
 
         stats = {
             "critic_loss": np.mean(critic_loss_epoch),
             "actor_loss": np.mean(actor_loss_epoch),
+            "obs_loss": np.mean(obs_loss_epoch),
         }
         self.critic.eval()
         self.agent.eval()
         return stats
+
+    def on_epoch_end(self):
+        pass
