@@ -1,5 +1,7 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+import torch.distributions as torch_dist
 from src.agents.qmdp_layer import QMDPLayer
 from src.distributions.mixture_models import ConditionalGaussian
 from src.distributions.utils import kl_divergence
@@ -13,14 +15,13 @@ class VINAgent(nn.Module):
     QMDP hidden layer
     """
     def __init__(
-        self, state_dim, act_dim, obs_dim, ctl_dim, rank, horizon,
+        self, state_dim, act_dim, obs_dim, rank, horizon,
         obs_cov="full"
         ):
         super().__init__()
         self.state_dim = state_dim
         self.act_dim = act_dim
         self.obs_dim = obs_dim
-        self.ctl_dim = ctl_dim
         self.horizon = horizon
         
         self.rnn = QMDPLayer(state_dim, act_dim, rank, horizon)
@@ -36,7 +37,7 @@ class VINAgent(nn.Module):
         """ Reset internal states for online inference """
         self._b = None # torch.ones(1, self.state_dim)
         self._a = None # previous action distribution
-        self._prev_ctl = None
+        self._prev_ctl = None # size=[1, batch_size, act_dim]
 
     @property
     def target_dist(self):
@@ -109,10 +110,9 @@ class VINAgent(nn.Module):
         if hidden is not None:
             b, a = hidden
 
-        logp_o = self.obs_model.log_prob(o)
-        logp_u = None if u is None else self.ctl_model.log_prob(u)
+        logp_o = self.obs_model.log_prob(o) 
         reward = self.reward
-        alpha_b, alpha_a = self.rnn(logp_o, logp_u, reward, b, a)
+        alpha_b, alpha_a = self.rnn(logp_o, u, reward, b, a)
         return [alpha_b, alpha_a], [alpha_b, alpha_a] # second tuple used in bptt
     
     def act_loss(self, o, u, mask, forward_out):
@@ -163,7 +163,7 @@ class VINAgent(nn.Module):
         stats = {"loss_o": logp_o_mean}
         return loss, stats
     
-    def choose_action(self, o, sample_method="ace", num_samples=1):
+    def choose_action(self, o):
         """ Choose action online for a single time step
         
         Args:
@@ -174,28 +174,20 @@ class VINAgent(nn.Module):
             num_samples (int, optional): number of samples to draw. Default=1
         
         Returns:
-            u_sample (torch.tensor): sampled controls. size=[num_samples, batch_size, ctl_dim]
+            u_sample (torch.tensor): sampled controls. size=[num_samples, batch_size]
             logp (torch.tensor): control log probability. size=[num_samples, batch_size]
         """
         [alpha_b, alpha_a], _ = self.forward(
             o.unsqueeze(0), self._prev_ctl, [self._b, self._a]
         )
         b_t, a_t = alpha_b[0], alpha_a[0]
-        
-        if sample_method == "bma":
-            u_sample = self.ctl_model.bayesian_average(a_t)
-        else:
-            sample_mean = True if sample_method == "acm" else False
-            u_sample = self.ctl_model.ancestral_sample(
-                a_t.unsqueeze(0), num_samples, sample_mean
-            ).squeeze(-3)
-            logp = self.ctl_model.mixture_log_prob(a_t, u_sample)
+        u_sample = torch_dist.Categorical(a_t).sample()
         
         self._b, self._a = b_t, a_t
-        self._prev_ctl = u_sample.sum(0)
-        return u_sample, logp
+        self._prev_ctl = F.one_hot(u_sample, num_classes=self.act_dim).unsqueeze(0).to(torch.float32)
+        return u_sample
     
-    def choose_action_batch(self, o, u, sample_method="ace", num_samples=1, tau=0.1, hard=True, return_hidden=False):
+    def choose_action_batch(self, o, u):
         """ Choose action offline for a batch of sequences 
         
         Args:
@@ -209,38 +201,48 @@ class VINAgent(nn.Module):
             return_hidden (bool, optional): if true return agent hidden state. Default=False
 
         Returns:
-            u_sample (torch.tensor): sampled controls. size=[num_samples, T, batch_size, ctl_dim]
+            u_sample (torch.tensor): sampled controls. size=[num_samples, T, batch_size]
             logp (torch.tensor): control log probability. size=[num_samples, T, batch_size]
         """
         [alpha_b, alpha_a], _ = self.forward(o, u)
-
-        if sample_method == "bma":
-            u_sample = self.ctl_model.bayesian_average(alpha_a)
-        else:
-            sample_mean = True if sample_method == "acm" else False
-            u_sample = self.ctl_model.ancestral_sample(
-                alpha_a, num_samples, sample_mean, tau, hard
-            )
-            logp = self.ctl_model.mixture_log_prob(alpha_a, u_sample)
-        if return_hidden:
-            return u_sample, logp, [alpha_b, alpha_a]
-        else:
-            return u_sample, logp
+        
+        u_sample = torch_dist.Categorical(alpha_a).sample()
+        return u_sample
 
     def predict(self, o, u, sample_method="ace", num_samples=1):
-        """ Offline prediction observations and control """
+        """ Offline prediction observations """
         [alpha_b, alpha_a], _ = self.forward(o, u)
 
         if sample_method == "bma":
             o_sample = self.obs_model.bayesian_average(alpha_b)
-            u_sample = self.ctl_model.bayesian_average(alpha_a)
-
         else:
             sample_mean = True if sample_method == "acm" else False
             o_sample = self.obs_model.ancestral_sample(
                 alpha_b, num_samples, sample_mean, tau=0.1, hard=True
             )
-            u_sample = self.ctl_model.ancestral_sample(
-                alpha_a, num_samples, sample_mean, tau=0.1, hard=True
-            )
-        return o_sample, u_sample
+        return o_sample
+
+if __name__ == "__main__":
+    state_dim = 10
+    act_dim = 5
+    obs_dim = 12
+    rank = 7
+    horizon = 9
+    agent = VINAgent(state_dim, act_dim, obs_dim, rank, horizon)
+    
+    # synthetic data
+    T = 15
+    batch_size = 32
+    o = torch.randn(T, batch_size, obs_dim)
+    u = torch.softmax(torch.randn(T, batch_size, act_dim), dim=-1)
+
+    # test forward
+    [b, a], _ = agent(o, u)
+    
+    # test batch inference
+    agent.choose_action_batch(o, u)
+
+    # test control
+    agent.reset()
+    u = agent.choose_action(o[0])
+    u = agent.choose_action(o[1])
