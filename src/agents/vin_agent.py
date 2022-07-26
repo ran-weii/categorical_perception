@@ -152,10 +152,10 @@ class VINAgent(nn.Module):
             loss (torch.tensor): observation loss. size=[batch_size]
             stats (dict): observation loss stats
         """
-        alpha_b, _ = forward_out
+        [alpha_b, _], _ = forward_out
         logp_o = self.obs_model.mixture_log_prob(alpha_b, o)
         loss = -torch.sum(logp_o * mask, dim=0) / (mask.sum(0) + 1e-6)
-
+        
         # compute stats
         nan_mask = mask.clone()
         nan_mask[nan_mask == 0] = torch.nan
