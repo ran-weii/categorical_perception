@@ -172,7 +172,7 @@ class SAC(Model):
             # compute value target
             q1_next, q2_next = self.critic_target(torch.cat([next_state, next_obs_norm], dim=-1))
             q_next = torch.min(q1_next, q2_next)
-            v_next = torch.logsumexp(q_next, dim=-1, keepdim=True)
+            v_next = torch.logsumexp(q_next / self.beta, dim=-1, keepdim=True) * self.beta
             q_target = r + (1 - done) * self.gamma * v_next
         
         q1, q2 = self.critic(torch.cat([state, obs_norm], dim=-1))
@@ -198,7 +198,7 @@ class SAC(Model):
         
         q1, q2 = self.critic(torch.cat([state, obs_norm], dim=-1))
         q = torch.min(q1, q2)
-        a_target = torch.softmax(q, dim=-1)
+        a_target = torch.softmax(q / self.beta, dim=-1)
         a_loss = kl_divergence(alpha_a, a_target)#.mean()
         a_loss = torch.sum(a_loss * mask) / (mask.sum() + 1e-6)
         return a_loss
