@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributions as torch_dist
+from src.distributions.nn_models import Model
 from src.agents.qmdp_layer import QMDPLayer
 from src.distributions.mixture_models import ConditionalGaussian
 from src.distributions.utils import kl_divergence
@@ -9,7 +10,7 @@ from src.distributions.utils import kl_divergence
 from typing import Union, Tuple, Optional
 from torch import Tensor
 
-class VINAgent(nn.Module):
+class VINAgent(Model):
     """ Value iteraction network agent with 
     conditinal gaussian observation and discrete control and 
     QMDP hidden layer
@@ -46,7 +47,7 @@ class VINAgent(nn.Module):
     @property
     def pi0(self):
         """ Prior policy """
-        return torch.softmax(self._pi0, dim=-1)
+        return torch.softmax(self._pi0, dim=-2)
     
     @property
     def transition(self):
@@ -111,8 +112,12 @@ class VINAgent(nn.Module):
             b, a = hidden
 
         logp_o = self.obs_model.log_prob(o) 
+        if u is not None:
+            u_oh = F.one_hot(u.long(), self.act_dim).squeeze(-2).to(torch.float32).to(self.device)
+        else:
+            u_oh = u
         reward = self.reward
-        alpha_b, alpha_a = self.rnn(logp_o, u, reward, b, a)
+        alpha_b, alpha_a = self.rnn(logp_o, u_oh, reward, b, a)
         return [alpha_b, alpha_a], [alpha_b, alpha_a] # second tuple used in bptt
     
     def act_loss(self, o, u, mask, forward_out):
@@ -184,7 +189,7 @@ class VINAgent(nn.Module):
         u_sample = torch_dist.Categorical(a_t).sample()
         
         self._b, self._a = b_t, a_t
-        self._prev_ctl = F.one_hot(u_sample, num_classes=self.act_dim).unsqueeze(0).to(torch.float32)
+        self._prev_ctl = u_sample.view(1, 1, -1)
         return u_sample
     
     def choose_action_batch(self, o, u):
@@ -234,7 +239,7 @@ if __name__ == "__main__":
     T = 15
     batch_size = 32
     o = torch.randn(T, batch_size, obs_dim)
-    u = torch.softmax(torch.randn(T, batch_size, act_dim), dim=-1)
+    u = torch.randint(0, act_dim, size=(T, batch_size))
 
     # test forward
     [b, a], _ = agent(o, u)
