@@ -18,6 +18,7 @@ def parse_args():
     
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--exp_path", type=str, default="../exp")
     # agent args
     parser.add_argument("--state_dim", type=int, default=30)
     parser.add_argument("--hmm_rank", type=int, default=32)
@@ -28,32 +29,67 @@ def parse_args():
     parser.add_argument("--num_hidden", type=int, default=2, help="number of hidden layers, default=2")
     parser.add_argument("--activation", type=str, default="relu", help="neural network activation, default=relu")
     parser.add_argument("--gamma", type=float, default=0.9, help="trainer discount factor, default=0.9")
-    parser.add_argument("--beta", type=float, default=0.2, help="softmax temperature, default=0.2")
+    parser.add_argument("--beta", type=float, default=0.1, help="softmax temperature, default=0.1")
     parser.add_argument("--polyak", type=float, default=0.995, help="polyak averaging factor, default=0.995")
     parser.add_argument("--norm_obs", type=bool_, default=False, help="whether to normalize observations for agent and algo, default=False")
     # training args
-    parser.add_argument("--buffer_size", type=int, default=1e5, help="agent replay buffer size, default=1e5")
-    parser.add_argument("--d_batch_size", type=int, default=100, help="training batch size, default=100")
+    parser.add_argument("--buffer_size", type=int, default=1e4, help="agent replay buffer size, default=1e5")
+    parser.add_argument("--d_batch_size", type=int, default=200, help="training batch size, default=200")
     parser.add_argument("--a_batch_size", type=int, default=32, help="actor critic batch size")
     parser.add_argument("--rnn_len", type=int, default=15, help="recurrent steps for training, default=15")
-    parser.add_argument("--d_steps", type=int, default=30, help="discriminator steps, default=50")
-    parser.add_argument("--a_steps", type=int, default=30, help="actor critic steps, default=50")
+    parser.add_argument("--d_steps", type=int, default=30, help="discriminator steps, default=30")
+    parser.add_argument("--a_steps", type=int, default=30, help="actor critic steps, default=30")
     parser.add_argument("--lr_d", type=float, default=0.001, help="discriminator learning rate, default=0.001")
     parser.add_argument("--lr_a", type=float, default=0.005, help="actor learning rate, default=0.001")
     parser.add_argument("--lr_c", type=float, default=0.001, help="critic learning rate, default=0.001")
     parser.add_argument("--decay", type=float, default=1e-5, help="weight decay, default=0")
     parser.add_argument("--grad_clip", type=float, default=1000., help="gradient clipping, default=1000.")
-    parser.add_argument("--grad_penalty", type=float, default=1.)
-    parser.add_argument("--obs_penalty", type=float, default=0.1)
+    parser.add_argument("--grad_penalty", type=float, default=0.1, help="discriminator gradient penalty, default=0.1")
+    parser.add_argument("--obs_penalty", type=float, default=0.1, help="observation penalty, default=0.1")
     # rollout args
     parser.add_argument("--epochs", type=int, default=100, help="number of training epochs, default=10")
-    parser.add_argument("--max_steps", type=int, default=500)
+    parser.add_argument("--max_steps", type=int, default=500, help="max steps per episode, default=500")
     parser.add_argument("--steps_per_epoch", type=int, default=1000)
     parser.add_argument("--update_after", type=int, default=1000)
     parser.add_argument("--update_every", type=int, default=50)
     parser.add_argument("--verbose", type=bool_, default=True)
+    parser.add_argument("--save", type=bool_, default=True)
     arglist = parser.parse_args()
     return arglist
+
+def plot_history(df_history, plot_keys, plot_std=True):
+    """ Plot learning history
+    
+    Args:
+        df_history (pd.dataframe): learning history dataframe with a binary train column.
+        plot_keys (list): list of colnames to be plotted.
+        plot_std (bool): whether to plot std shade.
+
+    Returns:
+        fig (plt.figure)
+        ax (plt.axes)
+    """
+    num_cols = len(plot_keys)
+    width = min(4 * num_cols, 15)
+    fig, ax = plt.subplots(1, num_cols, figsize=(width, 4))
+    for i in range(num_cols):
+        ax[i].plot(df_history["epoch"], df_history[plot_keys[i]], label="train")
+        if plot_std:
+            std = df_history[plot_keys[i].replace("_avg", "_std")]
+            ax[i].fill_between(
+                df_history["epoch"],
+                df_history[plot_keys[i]] - std,
+                df_history[plot_keys[i]] + std,
+                alpha=0.4
+            )
+
+        ax[i].legend()
+        ax[i].set_xlabel("epoch")
+        ax[i].set_ylabel(plot_keys[i])
+        ax[i].grid()
+    
+    plt.tight_layout()
+    return fig, ax
 
 def main(arglist):
     np.random.seed(arglist.seed)
@@ -92,6 +128,37 @@ def main(arglist):
         steps_per_epoch=arglist.steps_per_epoch, update_after=arglist.update_after, 
         update_every=arglist.update_every, verbose=arglist.verbose
     )
+
+    df_history = pd.DataFrame(logger.history)
+    
+    # save results
+    if arglist.save:
+        date_time = datetime.datetime.now().strftime("%m-%d-%Y %H-%M-%S")
+        exp_path = os.path.join(arglist.exp_path)
+        save_path = os.path.join(exp_path, date_time)
+        if not os.path.exists(exp_path):
+            os.mkdir(exp_path)
+        if not os.path.exists(save_path):
+            os.mkdir(save_path)
+        
+        # save args
+        with open(os.path.join(save_path, "args.json"), "w") as f:
+            json.dump(vars(arglist), f)
+        
+        # save model
+        torch.save(model.state_dict(), os.path.join(save_path, "model.pt"))
+        
+        # save history
+        df_history.to_csv(os.path.join(save_path, "history.csv"), index=False)
+        
+        # save history plot
+        fig_history, _ = plot_history(df_history, ["eps_len_avg", "d_loss_avg", 
+            "critic_loss_avg", "actor_loss_avg", "obs_loss_avg"])
+        fig_history.savefig(os.path.join(save_path, "history.png"), dpi=100)
+
+        print(f"\nmodel saved at: {save_path}")
+        plt.show()
+
 
 if __name__ == "__main__":
     arglist = parse_args()
