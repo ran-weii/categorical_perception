@@ -88,15 +88,15 @@ class DAC(Model):
             self.agent.parameters(), lr=lr_a, weight_decay=decay
         )
 
-        self.real_buffer = ReplayBuffer(agent.obs_dim, agent.act_dim, agent.state_dim, buffer_size)
+        self.real_buffer = ReplayBuffer(agent.obs_dim, agent.act_dim, agent.state_dim, int(1e6))
         self.replay_buffer = ReplayBuffer(agent.obs_dim, agent.act_dim, agent.state_dim, buffer_size)
 
         self.obs_mean = nn.Parameter(torch.zeros(agent.obs_dim), requires_grad=False)
         self.obs_variance = nn.Parameter(torch.ones(agent.obs_dim), requires_grad=False)
         
         self.plot_keys = [
-            "eps_return_avg", "d_loss_avg", "critic_loss_avg", "actor_loss_avg",
-            "bc_loss_avg", "obs_loss_avg"
+            "eps_return_avg", "eps_len_avg", "d_loss_avg", 
+            "critic_loss_avg", "actor_loss_avg", "obs_loss_avg"
         ]
     
     def __repr__(self):
@@ -143,7 +143,7 @@ class DAC(Model):
         self.agent.reset()
     
     def choose_action(self, obs):
-        obs = torch.from_numpy(obs).view(1, -1).to(torch.float32)#.to(self.device)
+        obs = torch.from_numpy(obs).view(1, -1).to(torch.float32).to(self.device)
         with torch.no_grad():
             ctl = self.agent.choose_action(obs)
         return ctl.squeeze(0).numpy()
@@ -210,7 +210,6 @@ class DAC(Model):
         done = batch["done"].to(self.device)
 
         ctl_oh = F.one_hot(ctl.long().squeeze(-1), self.agent.act_dim).to(torch.float32)
-        # print(obs.shape, ctl.shape, next_obs.shape, done.shape)
         
         # normalize observation
         obs_norm = self.normalize_obs(obs)
@@ -223,13 +222,8 @@ class DAC(Model):
             # compute value target
             q1_next, q2_next = self.critic_target(next_obs_norm)
             q_next = torch.min(q1_next, q2_next)
-            v_next = torch.logsumexp(self.beta * q_next, dim=-1, keepdim=True) / self.beta
+            v_next = torch.logsumexp(q_next / self.beta, dim=-1, keepdim=True) * self.beta
             q_target = r + (1 - done) * self.gamma * v_next
-            
-            # print("r", r.shape)
-            # print("q_next", q_next.shape)
-            # print("v_next", v_next.shape)
-            # print("q_target", q_target.shape)
         
         q1, q2 = self.critic(obs_norm)
         q1 = torch.gather(q1, -1, ctl.long())
@@ -245,7 +239,6 @@ class DAC(Model):
         obs = pad_batch["obs"].to(self.device)
         ctl = pad_batch["ctl"].to(self.device).to(torch.float32)
         mask = mask.to(self.device)
-        # print(obs.shape, ctl.shape, mask.shape)
 
         # normalize observation
         obs_norm = self.normalize_obs(obs)
@@ -293,7 +286,6 @@ class DAC(Model):
 
         critic_loss_epoch = []
         actor_loss_epoch = []
-        # bc_loss_epoch = []
         obs_loss_epoch = []
         for i in range(self.a_steps):
             # train critic
@@ -309,7 +301,6 @@ class DAC(Model):
 
             # train actor
             actor_loss = self.compute_actor_loss()
-            # bc_loss = self.compute_bc_loss()
             obs_loss = self.compute_obs_loss()
             actor_total_loss = (
                 actor_loss + self.obs_penalty * obs_loss
@@ -322,7 +313,6 @@ class DAC(Model):
             self.critic_optimizer.zero_grad()
 
             actor_loss_epoch.append(actor_loss.data.item())
-            # bc_loss_epoch.append(bc_loss.data.item())
             obs_loss_epoch.append(obs_loss.data.item())
             
             # update target networks
@@ -337,7 +327,6 @@ class DAC(Model):
                 logger.push({
                     "critic_loss": critic_loss.cpu().data.item(),
                     "actor_loss": actor_loss.cpu().data.item(),
-                    # "bc_loss": bc_loss.cpu().data.item(),
                     "obs_loss": obs_loss.cpu().data.item(),
                 })
 
@@ -345,7 +334,6 @@ class DAC(Model):
             "d_loss": np.mean(d_loss_epoch),
             "critic_loss": np.mean(critic_loss_epoch),
             "actor_loss": np.mean(actor_loss_epoch),
-            # "bc_loss": np.mean(bc_loss_epoch),
             "obs_loss": np.mean(obs_loss_epoch),
         }
         
