@@ -19,6 +19,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--exp_path", type=str, default="../exp")
+    parser.add_argument("--cp_path", type=str, default="none", help="checkpoint path, default=none")
     # agent args
     parser.add_argument("--state_dim", type=int, default=30)
     parser.add_argument("--hmm_rank", type=int, default=32)
@@ -92,7 +93,7 @@ def plot_history(df_history, plot_keys, plot_std=True):
     return fig, ax
 
 class SaveCallback:
-    def __init__(self, arglist):
+    def __init__(self, arglist, cp_history=None):
         date_time = datetime.datetime.now().strftime("%m-%d-%Y %H-%M-%S")
         exp_path = os.path.join(arglist.exp_path)
         save_path = os.path.join(exp_path, date_time)
@@ -106,6 +107,7 @@ class SaveCallback:
             json.dump(vars(arglist), f)
 
         self.save_path = save_path
+        self.cp_history = cp_history
 
     def __call__(self, model, logger):
         # save model
@@ -113,6 +115,10 @@ class SaveCallback:
         
         # save history
         df_history = pd.DataFrame(logger.history)
+        if self.cp_history is not None:
+            df_history["epoch"] += self.cp_history["epoch"].values[-1] + 1
+            df_history["time"] += self.cp_history["time"].values[-1]
+            df_history = pd.concat([self.cp_history, df_history], axis=0)
         df_history.to_csv(os.path.join(self.save_path, "history.csv"), index=False)
 
         # save history plot
@@ -152,13 +158,28 @@ def main(arglist):
         decay=arglist.decay, grad_clip=arglist.grad_clip, 
         grad_penalty=arglist.grad_penalty, obs_penalty=arglist.obs_penalty
     )
-    model.fill_real_buffer(dataset)
+    
+    cp_history = None
+    if arglist.cp_path != "none":
+        cp_path = os.path.join(arglist.exp_path, arglist.cp_path)
+
+        # load state dict
+        state_dict = torch.load(os.path.join(cp_path, "model.pt"))
+
+        # load history
+        cp_history = pd.read_csv(os.path.join(cp_path, "history.csv"))
+
+        model.load_state_dict(state_dict, strict=True)
+
+        print(f"loaded checkpoint from {cp_path}\n")
+    
     print(model)
     
     callback = None
     if arglist.save:
-        callback = SaveCallback(arglist)
-
+        callback = SaveCallback(arglist, cp_history=cp_history)
+    
+    model.fill_real_buffer(dataset)
     model, logger = train(
         env, model, arglist.epochs, max_steps=arglist.max_steps, 
         steps_per_epoch=arglist.steps_per_epoch, update_after=arglist.update_after, 
