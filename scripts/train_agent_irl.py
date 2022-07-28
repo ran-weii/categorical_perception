@@ -91,6 +91,38 @@ def plot_history(df_history, plot_keys, plot_std=True):
     plt.tight_layout()
     return fig, ax
 
+class SaveCallback:
+    def __init__(self, arglist):
+        date_time = datetime.datetime.now().strftime("%m-%d-%Y %H-%M-%S")
+        exp_path = os.path.join(arglist.exp_path)
+        save_path = os.path.join(exp_path, date_time)
+        if not os.path.exists(exp_path):
+            os.mkdir(exp_path)
+        if not os.path.exists(save_path):
+            os.mkdir(save_path)
+        
+        # save args
+        with open(os.path.join(save_path, "args.json"), "w") as f:
+            json.dump(vars(arglist), f)
+
+        self.save_path = save_path
+
+    def __call__(self, model, logger):
+        # save model
+        torch.save(model.state_dict(), os.path.join(self.save_path, "model.pt"))
+        
+        # save history
+        df_history = pd.DataFrame(logger.history)
+        df_history.to_csv(os.path.join(self.save_path, "history.csv"), index=False)
+
+        # save history plot
+        fig_history, _ = plot_history(df_history, ["eps_len_avg", "d_loss_avg", 
+            "critic_loss_avg", "actor_loss_avg", "obs_loss_avg"])
+        fig_history.savefig(os.path.join(self.save_path, "history.png"), dpi=100)
+        
+        print(f"\ncheckpoint saved at: {self.save_path}\n")
+
+
 def main(arglist):
     np.random.seed(arglist.seed)
     torch.manual_seed(arglist.seed)
@@ -122,43 +154,16 @@ def main(arglist):
     )
     model.fill_real_buffer(dataset)
     print(model)
+    
+    callback = None
+    if arglist.save:
+        callback = SaveCallback(arglist)
 
     model, logger = train(
         env, model, arglist.epochs, max_steps=arglist.max_steps, 
         steps_per_epoch=arglist.steps_per_epoch, update_after=arglist.update_after, 
-        update_every=arglist.update_every, verbose=arglist.verbose
+        update_every=arglist.update_every, verbose=arglist.verbose, callback=callback
     )
-
-    df_history = pd.DataFrame(logger.history)
-    
-    # save results
-    if arglist.save:
-        date_time = datetime.datetime.now().strftime("%m-%d-%Y %H-%M-%S")
-        exp_path = os.path.join(arglist.exp_path)
-        save_path = os.path.join(exp_path, date_time)
-        if not os.path.exists(exp_path):
-            os.mkdir(exp_path)
-        if not os.path.exists(save_path):
-            os.mkdir(save_path)
-        
-        # save args
-        with open(os.path.join(save_path, "args.json"), "w") as f:
-            json.dump(vars(arglist), f)
-        
-        # save model
-        torch.save(model.state_dict(), os.path.join(save_path, "model.pt"))
-        
-        # save history
-        df_history.to_csv(os.path.join(save_path, "history.csv"), index=False)
-        
-        # save history plot
-        fig_history, _ = plot_history(df_history, ["eps_len_avg", "d_loss_avg", 
-            "critic_loss_avg", "actor_loss_avg", "obs_loss_avg"])
-        fig_history.savefig(os.path.join(save_path, "history.png"), dpi=100)
-
-        print(f"\nmodel saved at: {save_path}")
-        plt.show()
-
 
 if __name__ == "__main__":
     arglist = parse_args()
