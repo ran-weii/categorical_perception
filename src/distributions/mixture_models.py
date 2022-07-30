@@ -25,16 +25,15 @@ class ConditionalGaussian(nn.Module):
         
         self.mu = nn.Parameter(torch.randn(1, z_dim, x_dim), requires_grad=True)
         self.lv = nn.Parameter(torch.randn(1, z_dim, x_dim), requires_grad=True)
-        self.tl = nn.Parameter(torch.randn(1, z_dim, x_dim, x_dim), requires_grad=True)
         
         nn.init.normal_(self.mu, mean=0, std=1)
         nn.init.normal_(self.lv, mean=0, std=0.01)
-        nn.init.normal_(self.tl, mean=0, std=0.01)
-        
-        if cov == "diag":
-            del self.tl
-            self.parameter_size = self.parameter_size[:-1]
-            self.tl = torch.zeros(1, z_dim, x_dim, x_dim).to(self.device)
+
+        if cov == "full":
+            self.tl = nn.Parameter(torch.randn(1, z_dim, x_dim, x_dim), requires_grad=True)
+            nn.init.normal_(self.tl, mean=0, std=0.01)
+        else:
+            self.tl = nn.Parameter(torch.zeros(1, z_dim, x_dim, x_dim), requires_grad=False)
         
         if batch_norm:
             self.bn = BatchNormTransform(x_dim, momentum=0.1, affine=False)
