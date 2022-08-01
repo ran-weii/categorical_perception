@@ -105,11 +105,12 @@ class DAC(Model):
         s_discriminator = self.discriminator.__repr__()
         s = "{}(gamma={}, beta={}, polyak={}, norm_obs={}, "\
             "buffer_size={}, d_batch_size={}, a_steps={}, d_steps={}, "\
-            "lr={}, decay={}, grad_clip={}, grad_penalty={}"\
+            "lr={}, decay={}, grad_clip={}, grad_penalty={}, bc_penalty={}, obs_penalty={}"\
             "\n    discriminator={}\n    agent={}, \n    critic={}\n)".format(
             self.__class__.__name__, self.gamma, self.beta, self.polyak, self.norm_obs,
             self.replay_buffer.max_size, self.d_batch_size, self.a_steps, self.d_steps,
-            self.lr, self.decay, self.grad_clip, self.grad_penalty, s_discriminator, s_agent, s_critic
+            self.lr, self.decay, self.grad_clip, self.grad_penalty, self.bc_penalty, self.obs_penalty,
+            s_discriminator, s_agent, s_critic
         )
         return s
 
@@ -148,9 +149,19 @@ class DAC(Model):
             ctl = self.agent.choose_action(obs)
         return ctl.squeeze(0).numpy()
     
-    def compute_reward(self, obs, ctl):
+    def compute_reward(self, state, obs, ctl):
         inputs = torch.cat([obs, ctl], dim=-1)
         log_r = self.discriminator(inputs)
+        
+        # compute ref agent likelihood
+        # value = self.agent.value
+        # alpha_a = self.agent.rnn.plan(state, value)
+        # logp_u = torch.log(alpha_a + 1e-6)
+        # logp_u = torch.sum(logp_u * ctl, dim=-1, keepdim=True)
+
+        # [_, alpha_a], _ = self.agent(obs, ctl.argmax(-1))
+        # logp_u = torch.gather(torch.log(alpha_a + 1e-6), -1, ctl.argmax(-1).unsqueeze(-1))
+        
         r = -log_r
         return r
     
@@ -169,15 +180,18 @@ class DAC(Model):
         )[0]
 
         grad_norm = torch.linalg.norm(grad, dim=-1)
-        return grad_norm
+        grad_pen = torch.pow(grad_norm - 1, 2).mean()
+        return grad_pen
 
     def compute_discriminator_loss(self): 
         real_batch = self.real_buffer.sample_random(self.d_batch_size, prioritize=False)
         fake_batch = self.replay_buffer.sample_random(self.d_batch_size, prioritize=True)
         
+        real_state = real_batch["state"].to(self.device)
         real_obs = real_batch["obs"].to(self.device)
         real_ctl = real_batch["ctl"].to(self.device)
         real_ctl = F.one_hot(real_ctl.long().squeeze(-1), self.agent.act_dim).to(torch.float32)
+        fake_state = fake_batch["state"].to(self.device)
         fake_obs = fake_batch["obs"].to(self.device)
         fake_ctl = fake_batch["ctl"].to(self.device)
         fake_ctl = F.one_hot(fake_ctl.long().squeeze(-1), self.agent.act_dim).to(torch.float32)
@@ -186,6 +200,8 @@ class DAC(Model):
         real_obs_norm = self.normalize_obs(real_obs)
         fake_obs_norm = self.normalize_obs(fake_obs)
 
+        # real_inputs = torch.cat([real_state, real_obs_norm, real_ctl], dim=-1)
+        # fake_inputs = torch.cat([fake_state, fake_obs_norm, fake_ctl], dim=-1)
         real_inputs = torch.cat([real_obs_norm, real_ctl], dim=-1)
         fake_inputs = torch.cat([fake_obs_norm, fake_ctl], dim=-1)
         inputs = torch.cat([real_inputs, fake_inputs], dim=0)
@@ -195,14 +211,15 @@ class DAC(Model):
         labels = torch.cat([real_labels, fake_labels], dim=0).to(self.device)
 
         out = torch.sigmoid(self.discriminator(inputs))
-        loss = F.binary_cross_entropy(out, labels)
+        d_loss = F.binary_cross_entropy(out, labels)
 
         gp = self.gradient_penalty(real_inputs, fake_inputs)
-        loss += self.grad_penalty * gp.mean()
-        return loss
+        return d_loss, gp
 
     def compute_critic_loss(self):
+        """ non sequential critic loss """
         batch = self.replay_buffer.sample_random(self.d_batch_size)
+        state = batch["state"].to(self.device)
         obs = batch["obs"].to(self.device)
         ctl = batch["ctl"].to(self.device)
         r = batch["rwd"].to(self.device)
@@ -217,7 +234,7 @@ class DAC(Model):
         
         with torch.no_grad():    
             # compute reward
-            r = self.compute_reward(obs_norm, ctl_oh)
+            r = self.compute_reward(state, obs_norm, ctl_oh)
 
             # compute value target
             q1_next, q2_next = self.critic_target(next_obs_norm)
@@ -233,18 +250,106 @@ class DAC(Model):
         q_loss = (q1_loss + q2_loss) / 2
         return q_loss
 
+    # def compute_critic_loss(self):
+    #     """ sequential critic loss """
+    #     # batch = self.replay_buffer.sample_episodes(self.a_batch_size, self.rnn_len, prioritize=False)
+    #     # pad_batch, mask = batch
+    #     # state = pad_batch["state"].to(self.device)
+    #     # obs = pad_batch["obs"].to(self.device)
+    #     # ctl = pad_batch["ctl"].to(self.device)
+    #     # next_state = pad_batch["next_state"].to(self.device)
+    #     # next_obs = pad_batch["next_obs"].to(self.device)
+    #     # done = pad_batch["done"].to(self.device)
+    #     # mask = mask.unsqueeze(-1).to(self.device)
+
+    #     real_batch = self.real_buffer.sample_episodes(self.a_batch_size, self.rnn_len, prioritize=False)
+    #     fake_batch = self.replay_buffer.sample_episodes(self.a_batch_size, self.rnn_len, prioritize=False)
+    #     real_pad_batch, real_mask = real_batch
+    #     fake_pad_batch, fake_mask = fake_batch
+
+    #     real_state = real_pad_batch["state"].to(self.device)
+    #     real_obs = real_pad_batch["obs"].to(self.device)
+    #     real_ctl = real_pad_batch["ctl"].to(self.device)
+    #     real_next_state = real_pad_batch["next_state"].to(self.device)
+    #     real_next_obs = real_pad_batch["next_obs"].to(self.device)
+    #     real_done = real_pad_batch["done"].to(self.device)
+    #     real_mask = real_mask.unsqueeze(-1).to(self.device)
+
+    #     fake_state = fake_pad_batch["state"].to(self.device)
+    #     fake_obs = fake_pad_batch["obs"].to(self.device)
+    #     fake_ctl = fake_pad_batch["ctl"].to(self.device)
+    #     fake_next_state = fake_pad_batch["next_state"].to(self.device)
+    #     fake_next_obs = fake_pad_batch["next_obs"].to(self.device)
+    #     fake_done = fake_pad_batch["done"].to(self.device)
+    #     fake_mask = fake_mask.unsqueeze(-1).to(self.device)
+
+    #     state = torch.cat([real_state, fake_state], dim=1)
+    #     obs = torch.cat([real_obs, fake_obs], dim=1)
+    #     ctl = torch.cat([real_ctl, fake_ctl], dim=1)
+    #     next_state = torch.cat([real_next_state, fake_next_state], dim=1)
+    #     next_obs = torch.cat([real_next_obs, fake_next_obs], dim=1)
+    #     done = torch.cat([real_done, fake_done], dim=1)
+    #     mask = torch.cat([real_mask, fake_mask], dim=1)
+        
+    #     ctl_oh = F.one_hot(ctl.long().squeeze(-1), self.agent.act_dim).to(torch.float32)
+
+    #     obs_norm = self.normalize_obs(obs)
+    #     next_obs_norm = self.normalize_obs(next_obs)
+
+    #     with torch.no_grad():
+    #         # compute reward
+    #         r = self.compute_reward(state, obs_norm, ctl_oh)
+
+    #         # compute value target
+    #         q1_next, q2_next = self.critic_target(torch.cat([next_state, next_obs_norm], dim=-1))
+    #         # q1_next, q2_next = self.critic_target(next_obs_norm)
+    #         q_next = torch.min(q1_next, q2_next)
+    #         v_next = torch.logsumexp(q_next / self.beta, dim=-1, keepdim=True) * self.beta 
+    #         q_target = r + (1 - done) * self.gamma * v_next 
+
+    #     q1, q2 = self.critic(torch.cat([state, obs_norm], dim=-1))
+    #     # q1, q2 = self.critic(obs_norm)
+    #     q1 = torch.gather(q1, -1, ctl.long())
+    #     q2 = torch.gather(q2, -1, ctl.long())
+    #     q1_loss = torch.pow(q1 - q_target, 2) * mask
+    #     q2_loss = torch.pow(q2 - q_target, 2) * mask
+    #     q1_loss = q1_loss.sum() / mask.sum()
+    #     q2_loss = q2_loss.sum() / mask.sum()
+    #     q_loss = (q1_loss + q2_loss) / 2
+    #     return q_loss
+
     def compute_actor_loss(self):
         batch = self.replay_buffer.sample_episodes(self.a_batch_size, self.rnn_len, prioritize=False)
         pad_batch, mask = batch
+        state = pad_batch["state"].to(self.device)
         obs = pad_batch["obs"].to(self.device)
         ctl = pad_batch["ctl"].to(self.device).to(torch.float32)
         mask = mask.to(self.device)
+
+        # real_batch = self.real_buffer.sample_episodes(self.a_batch_size, self.rnn_len, prioritize=False)
+        # fake_batch = self.replay_buffer.sample_episodes(self.a_batch_size, self.rnn_len, prioritize=False)
+        # real_pad_batch, real_mask = real_batch
+        # fake_pad_batch, fake_mask = fake_batch
+
+        # real_state = real_pad_batch["state"].to(self.device)
+        # real_obs = real_pad_batch["obs"].to(self.device)
+        # real_ctl = real_pad_batch["ctl"].to(self.device)
+
+        # fake_state = fake_pad_batch["state"].to(self.device)
+        # fake_obs = fake_pad_batch["obs"].to(self.device)
+        # fake_ctl = fake_pad_batch["ctl"].to(self.device)
+
+        # state = torch.cat([real_state, fake_state], dim=1)
+        # obs = torch.cat([real_obs, fake_obs], dim=1)
+        # ctl = torch.cat([real_ctl, fake_ctl], dim=1)
+        # mask = torch.cat([real_mask, fake_mask], dim=1)
 
         # normalize observation
         obs_norm = self.normalize_obs(obs)
 
         [_, alpha_a], _ = self.agent(obs, ctl)
         
+        # q1, q2 = self.critic(torch.cat([state, obs_norm], dim=-1))
         q1, q2 = self.critic(obs_norm)
         q = torch.min(q1, q2)
         pi_target = torch.softmax(q / self.beta, dim=-1)
@@ -252,11 +357,38 @@ class DAC(Model):
         a_loss = torch.sum(a_loss * mask) / (mask.sum() + 1e-6)
         return a_loss
     
-    def compute_obs_loss(self):
-        batch = self.replay_buffer.sample_episodes(self.a_batch_size, self.rnn_len, prioritize=False)
+    def compute_bc_loss(self):
+        batch_size = min(self.real_buffer.num_eps, self.a_batch_size)
+        batch = self.real_buffer.sample_episodes(batch_size, self.rnn_len)
         pad_batch, mask = batch
         obs = pad_batch["obs"].to(self.device)
         ctl = pad_batch["ctl"].to(self.device)
+        mask = mask.to(self.device)
+        
+        out = self.agent(obs, ctl)
+        bc_loss, _ = self.agent.act_loss(obs, ctl, mask, out)
+        bc_loss = bc_loss.mean()
+        return bc_loss
+
+    def compute_obs_loss(self):
+        # batch = self.replay_buffer.sample_episodes(self.a_batch_size, self.rnn_len, prioritize=False)
+        # pad_batch, mask = batch
+        # state = pad_batch["state"].to(self.device)
+        # obs = pad_batch["obs"].to(self.device)
+        # ctl = pad_batch["ctl"].to(self.device).to(torch.float32)
+        # mask = mask.to(self.device)
+
+        real_batch = self.real_buffer.sample_episodes(self.a_batch_size, self.rnn_len, prioritize=False)
+        fake_batch = self.replay_buffer.sample_episodes(self.a_batch_size, self.rnn_len, prioritize=False)
+        real_pad_batch, real_mask = real_batch
+        fake_pad_batch, fake_mask = fake_batch
+        real_obs = real_pad_batch["obs"].to(self.device)
+        real_ctl = real_pad_batch["ctl"].to(self.device)
+        fake_obs = fake_pad_batch["obs"].to(self.device)
+        fake_ctl = fake_pad_batch["ctl"].to(self.device)
+        obs = torch.cat([real_obs, fake_obs], dim=1)
+        ctl = torch.cat([real_ctl, fake_ctl], dim=1)
+        mask = torch.cat([real_mask, fake_mask], dim=1)
         
         out = self.agent(obs, ctl)
         obs_loss, _ = self.agent.obs_loss(obs, ctl, mask, out)
@@ -272,8 +404,9 @@ class DAC(Model):
         d_loss_epoch = []
         for i in range(self.d_steps):
             # train discriminator
-            d_loss = self.compute_discriminator_loss()
-            d_loss.backward()
+            d_loss, gp = self.compute_discriminator_loss()
+            d_total_loss = d_loss + self.grad_penalty * gp
+            d_total_loss.backward()
             if self.grad_clip is not None:
                 nn.utils.clip_grad_norm_(self.discriminator.parameters(), self.grad_clip)
             self.d_optimizer.step()
@@ -286,6 +419,7 @@ class DAC(Model):
 
         critic_loss_epoch = []
         actor_loss_epoch = []
+        bc_loss_epoch = []
         obs_loss_epoch = []
         for i in range(self.a_steps):
             # train critic
@@ -301,9 +435,10 @@ class DAC(Model):
 
             # train actor
             actor_loss = self.compute_actor_loss()
+            bc_loss = self.compute_bc_loss()
             obs_loss = self.compute_obs_loss()
             actor_total_loss = (
-                actor_loss + self.obs_penalty * obs_loss
+                actor_loss + self.bc_penalty * bc_loss + self.obs_penalty * obs_loss
             )
             actor_total_loss.backward()
             if self.grad_clip is not None:
@@ -313,6 +448,7 @@ class DAC(Model):
             self.critic_optimizer.zero_grad()
 
             actor_loss_epoch.append(actor_loss.data.item())
+            bc_loss_epoch.append(bc_loss.data.item())
             obs_loss_epoch.append(obs_loss.data.item())
             
             # update target networks
@@ -327,6 +463,7 @@ class DAC(Model):
                 logger.push({
                     "critic_loss": critic_loss.cpu().data.item(),
                     "actor_loss": actor_loss.cpu().data.item(),
+                    "bc_loss": bc_loss.cpu().data.item(),
                     "obs_loss": obs_loss.cpu().data.item(),
                 })
 
@@ -334,6 +471,7 @@ class DAC(Model):
             "d_loss": np.mean(d_loss_epoch),
             "critic_loss": np.mean(critic_loss_epoch),
             "actor_loss": np.mean(actor_loss_epoch),
+            "bc_loss": np.mean(bc_loss_epoch),
             "obs_loss": np.mean(obs_loss_epoch),
         }
         
@@ -343,4 +481,23 @@ class DAC(Model):
         return stats
 
     def on_epoch_end(self):
-        pass
+        """ Update real buffer hidden states on epoch end """
+        num_samples = min(self.a_batch_size, self.real_buffer.num_eps)
+        eps_ids = np.random.choice(np.arange(self.real_buffer.num_eps), num_samples, replace=False)
+        for i in eps_ids:
+            # buffer size trim handle
+            if (i + 1) >= self.real_buffer.num_eps:
+                break
+            obs = torch.from_numpy(self.real_buffer.episodes[i]["obs"]).to(torch.float32).to(self.device)
+            ctl = torch.from_numpy(self.real_buffer.episodes[i]["ctl"]).to(torch.float32).to(self.device)
+            next_obs = torch.from_numpy(self.real_buffer.episodes[i]["next_obs"]).to(torch.float32).to(self.device)
+            next_ctl = torch.from_numpy(self.real_buffer.episodes[i]["next_ctl"]).to(torch.float32).to(self.device)
+
+            obs = torch.cat([obs, next_obs[-1:]], dim=0)
+            ctl = torch.cat([ctl, next_ctl[-1:]], dim=0)
+            rwd = np.zeros((len(obs), 1))
+            done = np.zeros((len(obs), 1))
+            with torch.no_grad():
+                [state, _], _ = self.agent(obs.unsqueeze(1), ctl.unsqueeze(1))
+                state = state.squeeze(1)
+            self.real_buffer.push(obs.cpu().numpy(), ctl.cpu().numpy(), state.cpu().numpy(), rwd, done)
