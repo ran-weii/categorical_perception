@@ -57,6 +57,7 @@ def parse_args():
     parser.add_argument("--steps_per_epoch", type=int, default=1000)
     parser.add_argument("--update_after", type=int, default=1000)
     parser.add_argument("--update_every", type=int, default=50)
+    parser.add_argument("--cp_every", type=int, default=1000, help="checkpoint interval, default=1000")
     parser.add_argument("--verbose", type=bool_, default=True)
     parser.add_argument("--save", type=bool_, default=True)
     arglist = parser.parse_args()
@@ -101,23 +102,26 @@ class SaveCallback:
         date_time = datetime.datetime.now().strftime("%m-%d-%Y %H-%M-%S")
         exp_path = os.path.join(arglist.exp_path)
         save_path = os.path.join(exp_path, date_time)
+        model_path = os.path.join(save_path, "models") # used to save model checkpoint
         if not os.path.exists(exp_path):
             os.mkdir(exp_path)
         if not os.path.exists(save_path):
             os.mkdir(save_path)
+        if not os.path.exists(model_path):
+            os.mkdir(model_path)
         
         # save args
         with open(os.path.join(save_path, "args.json"), "w") as f:
             json.dump(vars(arglist), f)
 
         self.save_path = save_path
+        self.model_path = model_path
         self.plot_keys = plot_keys
         self.cp_history = cp_history
+        self.cp_every = arglist.cp_every
+        self.iter = 0
 
     def __call__(self, model, logger):
-        # save model
-        torch.save(model.state_dict(), os.path.join(self.save_path, "model.pt"))
-        
         # save history
         df_history = pd.DataFrame(logger.history)
         if self.cp_history is not None:
@@ -132,9 +136,16 @@ class SaveCallback:
         
         plt.clf()
         plt.close()
-        print(f"\ncheckpoint saved at: {self.save_path}\n")
 
-""" TODO: add checkpoint models and evals """
+        if (self.iter + 1) % self.cp_every == 0:
+            # save model
+            torch.save(model.state_dict(), os.path.join(self.model_path, f"model_{self.iter}.pt"))
+            print(f"\ncheckpoint saved at: {self.save_path}\n")
+        self.iter += 1
+    
+    def save_model(self, model):
+        torch.save(model.state_dict(), os.path.join(self.save_path, "model.pt"))
+
 def main(arglist):
     np.random.seed(arglist.seed)
     torch.manual_seed(arglist.seed)
@@ -207,6 +218,7 @@ def main(arglist):
         steps_per_epoch=arglist.steps_per_epoch, update_after=arglist.update_after, 
         update_every=arglist.update_every, verbose=arglist.verbose, callback=callback
     )
+    callback.save_model(model)
 
 if __name__ == "__main__":
     arglist = parse_args()
