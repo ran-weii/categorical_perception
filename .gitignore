@@ -3,3 +3,4 @@
 *.ipynb
 src.egg-info/*
 data/*
+exp/*
