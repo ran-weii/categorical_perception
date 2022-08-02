@@ -6,7 +6,7 @@ import torch.jit as jit
 from typing import Union, Tuple
 from torch import Tensor
 
-class QMDPLayer(jit.ScriptModule):
+class QMDPLayer(nn.Module):
     def __init__(self, state_dim, act_dim, rank, horizon):
         super().__init__()
         self.state_dim = state_dim
@@ -39,7 +39,7 @@ class QMDPLayer(jit.ScriptModule):
         w = torch.einsum("nri, nrj, nrk -> nkij", self.u, self.v, self.w)
         return torch.softmax(w, dim=-1)
     
-    @jit.script_method
+    # @jit.script_method
     def compute_value(self, transition: Tensor, reward: Tensor) -> Tensor:
         """ Compute expected value using value iteration
 
@@ -57,7 +57,7 @@ class QMDPLayer(jit.ScriptModule):
             q[t+1] = reward + torch.einsum("nkij, nkj -> nki", transition, v_next)
         return torch.stack(q)
     
-    @jit.script_method
+    # @jit.script_method
     def plan(self, b: Tensor, value: Tensor) -> Tensor:
         """ Compute the belief action distribution 
         
@@ -77,7 +77,7 @@ class QMDPLayer(jit.ScriptModule):
         a = torch.einsum("h...nk, nh -> ...nk", a, tau)
         return a
 
-    @jit.script_method
+    # @jit.script_method
     def update_belief(self, logp_o: Tensor, transition: Tensor, b: Tensor, a: Tensor) -> Tensor:
         """ Compute state posterior
         
@@ -95,7 +95,7 @@ class QMDPLayer(jit.ScriptModule):
         b_post = torch.softmax(logp_s + logp_o, dim=-1)
         return b_post
     
-    @jit.script_method
+    # @jit.script_method
     def update_action(self, logp_u: Tensor, a: Tensor) -> Tensor:
         """ Compute action posterior 
         
@@ -110,7 +110,7 @@ class QMDPLayer(jit.ScriptModule):
         a_post = torch.softmax(logp_a + logp_u, dim=-1)
         return a_post
     
-    @jit.script_method
+    # @jit.script_method
     def update_cell(
         self, logp_o: Tensor, u: Tensor, b: Tensor, 
         transition: Tensor, value: Tensor
@@ -120,7 +120,7 @@ class QMDPLayer(jit.ScriptModule):
         a_next = self.plan(b_post, value)
         return (b_post, a_next)
     
-    @jit.script_method
+    # @jit.script_method
     def init_hidden(self, logp_o: Tensor, value: Tensor) -> Tuple[Tensor, Tensor]:
         b0 = torch.softmax(self.b0, dim=-1)
         logp_s = torch.log(b0 + self.eps)
