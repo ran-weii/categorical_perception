@@ -35,6 +35,7 @@ def parse_args():
     parser.add_argument("--beta", type=float, default=0.1, help="softmax temperature, default=0.1")
     parser.add_argument("--polyak", type=float, default=0.995, help="polyak averaging factor, default=0.995")
     parser.add_argument("--norm_obs", type=bool_, default=False, help="whether to normalize observations for agent and algo, default=False")
+    parser.add_argument("--use_state", type=bool_, default=False, help="whether to use state in discriminator and critic, default=False")
     # training args
     parser.add_argument("--buffer_size", type=int, default=1e4, help="agent replay buffer size, default=1e5")
     parser.add_argument("--d_batch_size", type=int, default=200, help="training batch size, default=200")
@@ -169,7 +170,7 @@ def main(arglist):
         model = DAC(
             agent, arglist.hidden_dim, arglist.num_hidden, arglist.activation,
             gamma=arglist.gamma, beta=arglist.beta, polyak=arglist.polyak,
-            norm_obs=arglist.norm_obs, buffer_size=arglist.buffer_size,
+            norm_obs=arglist.norm_obs, use_state=arglist.use_state, buffer_size=arglist.buffer_size,
             d_batch_size=arglist.d_batch_size, a_batch_size=arglist.a_batch_size, 
             rnn_len=arglist.rnn_len, d_steps=arglist.d_steps, a_steps=arglist.a_steps, 
             lr_d=arglist.lr_d, lr_a=arglist.lr_a, lr_c=arglist.lr_c, 
