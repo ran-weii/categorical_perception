@@ -70,11 +70,11 @@ class QMDPLayer(jit.ScriptModule):
         """
         tau = torch.exp(self.tau.clip(math.log(1e-6), math.log(1e3)))
         tau = poisson_pdf(tau, self.horizon)
-        if tau.shape[0] != b.shape[0]:
-            tau = torch.repeat_interleave(tau, b.shape[0], 0)
+        if tau.shape[0] != b.shape[-2]:
+            tau = torch.repeat_interleave(tau, b.shape[-2], 0)
         
-        a = torch.softmax(torch.einsum("ni, hnki -> hnk", b, value), dim=-1)
-        a = torch.einsum("hnk, nh -> nk", a, tau)
+        a = torch.softmax(torch.einsum("...ni, h...nki -> h...nk", b, value), dim=-1)
+        a = torch.einsum("h...nk, nh -> ...nk", a, tau)
         return a
 
     @jit.script_method
