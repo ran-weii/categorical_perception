@@ -11,6 +11,7 @@ import torch
 from src.env.mountain_car import CustomMountainCar
 from src.agents.vin_agent import VINAgent
 from src.algo.irl import DAC
+from src.algo.firl import FIRL
 from src.algo.rl_utils import train
 
 def parse_args():
@@ -26,6 +27,7 @@ def parse_args():
     parser.add_argument("--horizon", type=int, default=30)
     parser.add_argument("--obs_cov", type=str, choices=["full", "diag"], default="full")
     # algo args
+    parser.add_argument("--algo", type=str, choices=["dac", "firl"], default="dac")
     parser.add_argument("--hidden_dim", type=int, default=64, help="neural network hidden dims, default=64")
     parser.add_argument("--num_hidden", type=int, default=2, help="number of hidden layers, default=2")
     parser.add_argument("--activation", type=str, default="relu", help="neural network activation, default=relu")
@@ -38,6 +40,7 @@ def parse_args():
     parser.add_argument("--d_batch_size", type=int, default=200, help="training batch size, default=200")
     parser.add_argument("--a_batch_size", type=int, default=32, help="actor critic batch size")
     parser.add_argument("--rnn_len", type=int, default=15, help="recurrent steps for training, default=15")
+    parser.add_argument("--reward_steps", type=int, default=500, help="number of steps to compute reward loss in firl, default=500")
     parser.add_argument("--d_steps", type=int, default=30, help="discriminator steps, default=30")
     parser.add_argument("--a_steps", type=int, default=30, help="actor critic steps, default=30")
     parser.add_argument("--lr_d", type=float, default=0.001, help="discriminator learning rate, default=0.001")
@@ -46,6 +49,7 @@ def parse_args():
     parser.add_argument("--decay", type=float, default=1e-5, help="weight decay, default=0")
     parser.add_argument("--grad_clip", type=float, default=1000., help="gradient clipping, default=1000.")
     parser.add_argument("--grad_penalty", type=float, default=0.1, help="discriminator gradient penalty, default=0.1")
+    parser.add_argument("--bc_penalty", type=float, default=1., help="behavior cloning penalty, default=1.")
     parser.add_argument("--obs_penalty", type=float, default=0.1, help="observation penalty, default=0.1")
     # rollout args
     parser.add_argument("--epochs", type=int, default=100, help="number of training epochs, default=10")
@@ -93,7 +97,7 @@ def plot_history(df_history, plot_keys, plot_std=True):
     return fig, ax
 
 class SaveCallback:
-    def __init__(self, arglist, cp_history=None):
+    def __init__(self, arglist, plot_keys, cp_history=None):
         date_time = datetime.datetime.now().strftime("%m-%d-%Y %H-%M-%S")
         exp_path = os.path.join(arglist.exp_path)
         save_path = os.path.join(exp_path, date_time)
@@ -107,6 +111,7 @@ class SaveCallback:
             json.dump(vars(arglist), f)
 
         self.save_path = save_path
+        self.plot_keys = plot_keys
         self.cp_history = cp_history
 
     def __call__(self, model, logger):
@@ -122,13 +127,14 @@ class SaveCallback:
         df_history.to_csv(os.path.join(self.save_path, "history.csv"), index=False)
 
         # save history plot
-        fig_history, _ = plot_history(df_history, ["eps_len_avg", "d_loss_avg", 
-            "critic_loss_avg", "actor_loss_avg", "obs_loss_avg"])
+        fig_history, _ = plot_history(df_history, self.plot_keys)
         fig_history.savefig(os.path.join(self.save_path, "history.png"), dpi=100)
         
+        plt.clf()
+        plt.close()
         print(f"\ncheckpoint saved at: {self.save_path}\n")
 
-
+""" TODO: add checkpoint models and evals """
 def main(arglist):
     np.random.seed(arglist.seed)
     torch.manual_seed(arglist.seed)
@@ -148,16 +154,32 @@ def main(arglist):
         arglist.horizon, obs_cov=arglist.obs_cov
     )
     
-    model = DAC(
-        agent, arglist.hidden_dim, arglist.num_hidden, arglist.activation,
-        gamma=arglist.gamma, beta=arglist.beta, polyak=arglist.polyak,
-        norm_obs=arglist.norm_obs, buffer_size=arglist.buffer_size,
-        d_batch_size=arglist.d_batch_size, a_batch_size=arglist.a_batch_size, 
-        rnn_len=arglist.rnn_len, d_steps=arglist.d_steps, a_steps=arglist.a_steps, 
-        lr_d=arglist.lr_d, lr_a=arglist.lr_a, lr_c=arglist.lr_c, 
-        decay=arglist.decay, grad_clip=arglist.grad_clip, 
-        grad_penalty=arglist.grad_penalty, obs_penalty=arglist.obs_penalty
-    )
+    if arglist.algo == "dac":
+        model = DAC(
+            agent, arglist.hidden_dim, arglist.num_hidden, arglist.activation,
+            gamma=arglist.gamma, beta=arglist.beta, polyak=arglist.polyak,
+            norm_obs=arglist.norm_obs, buffer_size=arglist.buffer_size,
+            d_batch_size=arglist.d_batch_size, a_batch_size=arglist.a_batch_size, 
+            rnn_len=arglist.rnn_len, d_steps=arglist.d_steps, a_steps=arglist.a_steps, 
+            lr_d=arglist.lr_d, lr_a=arglist.lr_a, lr_c=arglist.lr_c, 
+            decay=arglist.decay, grad_clip=arglist.grad_clip, 
+            grad_penalty=arglist.grad_penalty, bc_penalty=arglist.bc_penalty, 
+            obs_penalty=arglist.obs_penalty
+        )
+        plot_keys = ["eps_len_avg", "d_loss_avg", "critic_loss_avg", "actor_loss_avg", "bc_loss_avg", "obs_loss_avg"]
+    elif arglist.algo == "firl":
+        model = FIRL(
+            agent, arglist.hidden_dim, arglist.num_hidden, arglist.activation,
+            gamma=arglist.gamma, beta=arglist.beta, polyak=arglist.polyak,
+            norm_obs=arglist.norm_obs, buffer_size=arglist.buffer_size,
+            d_batch_size=arglist.d_batch_size, a_batch_size=arglist.a_batch_size, 
+            rnn_len=arglist.rnn_len, reward_steps=arglist.reward_steps, 
+            d_steps=arglist.d_steps, a_steps=arglist.a_steps, 
+            lr_d=arglist.lr_d, lr_a=arglist.lr_a, lr_c=arglist.lr_c, 
+            decay=arglist.decay, grad_clip=arglist.grad_clip, 
+            grad_penalty=arglist.grad_penalty, obs_penalty=arglist.obs_penalty
+        )
+        plot_keys = ["eps_len_avg", "d_loss_avg", "r_loss_avg", "critic_loss_avg", "actor_loss_avg", "obs_loss_avg"]
     
     cp_history = None
     if arglist.cp_path != "none":
@@ -177,7 +199,7 @@ def main(arglist):
     
     callback = None
     if arglist.save:
-        callback = SaveCallback(arglist, cp_history=cp_history)
+        callback = SaveCallback(arglist, plot_keys, cp_history=cp_history)
     
     model.fill_real_buffer(dataset)
     model, logger = train(
