@@ -25,7 +25,7 @@ def parse_args():
     parser.add_argument("--state_dim", type=int, default=30)
     parser.add_argument("--hmm_rank", type=int, default=32)
     parser.add_argument("--horizon", type=int, default=30)
-    parser.add_argument("--obs_cov", type=str, choices=["full", "diag"], default="full")
+    parser.add_argument("--obs_cov", type=str, choices=["full", "diag", "tied"], default="full")
     # algo args
     parser.add_argument("--algo", type=str, choices=["dac", "firl"], default="dac")
     parser.add_argument("--hidden_dim", type=int, default=64, help="neural network hidden dims, default=64")
