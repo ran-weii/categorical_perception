@@ -280,7 +280,6 @@ class DAC(Model):
     def compute_actor_loss(self):
         batch = self.replay_buffer.sample_episodes(self.a_batch_size, self.rnn_len, prioritize=False)
         pad_batch, mask = batch
-        state = pad_batch["state"].to(self.device)
         obs = pad_batch["obs"].to(self.device)
         ctl = pad_batch["ctl"].to(self.device).to(torch.float32)
         mask = mask.to(self.device)
@@ -288,7 +287,7 @@ class DAC(Model):
         # normalize observation
         obs_norm = self.normalize_obs(obs)
 
-        [_, alpha_a], _ = self.agent(obs, ctl)
+        [state, alpha_a], _ = self.agent(obs, ctl)
         
         critic_inputs = self.concat_inputs(state, obs_norm)
         q1, q2 = self.critic(critic_inputs)
