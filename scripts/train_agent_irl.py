@@ -25,6 +25,8 @@ def parse_args():
     parser.add_argument("--state_dim", type=int, default=30)
     parser.add_argument("--hmm_rank", type=int, default=32)
     parser.add_argument("--horizon", type=int, default=30)
+    parser.add_argument("--alpha", type=float, default=1.)
+    parser.add_argument("--epsilon", type=float, default=1.)
     parser.add_argument("--obs_cov", type=str, choices=["full", "diag", "tied"], default="full")
     # algo args
     parser.add_argument("--algo", type=str, choices=["dac", "firl"], default="dac")
@@ -163,7 +165,7 @@ def main(arglist):
     
     agent = VINAgent(
         arglist.state_dim, act_dim, obs_dim, arglist.hmm_rank, 
-        arglist.horizon, obs_cov=arglist.obs_cov
+        arglist.horizon, arglist.alpha, arglist.epsilon, obs_cov=arglist.obs_cov
     )
     
     if arglist.algo == "dac":
