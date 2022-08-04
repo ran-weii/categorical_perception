@@ -16,14 +16,16 @@ class VINAgent(Model):
     QMDP hidden layer
     """
     def __init__(
-        self, state_dim, act_dim, obs_dim, rank, horizon,
-        obs_cov="full"
+        self, state_dim, act_dim, obs_dim, rank, horizon, 
+        alpha, epsilon, obs_cov="full"
         ):
         super().__init__()
         self.state_dim = state_dim
         self.act_dim = act_dim
         self.obs_dim = obs_dim
         self.horizon = horizon
+        self.alpha = alpha # observation entropy weight
+        self.epsilon = epsilon # prior policy weight
         
         self.rnn = QMDPLayer(state_dim, act_dim, rank, horizon)
         self.obs_model = ConditionalGaussian(
@@ -78,7 +80,7 @@ class VINAgent(Model):
         entropy = self.obs_model.entropy()
         c = self.target_dist
         kl = kl_divergence(torch.eye(self.state_dim), c)
-        return -kl - entropy
+        return -kl - self.alpha * entropy
     
     @property
     def reward(self):
@@ -90,7 +92,7 @@ class VINAgent(Model):
         kl = kl_divergence(transition, c.unsqueeze(-2).unsqueeze(-2))
         eh = torch.sum(transition * entropy.unsqueeze(-2).unsqueeze(-2), dim=-1)
         log_pi0 = torch.log(self.pi0 + 1e-6)
-        r = -kl - eh + log_pi0
+        r = -kl - self.alpha * eh + self.epsilon * log_pi0
         return r
 
     def forward(
