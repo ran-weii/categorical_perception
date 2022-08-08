@@ -122,20 +122,20 @@ class VINAgent(Model):
         alpha_b, alpha_a = self.rnn(logp_o, u_oh, reward, b, a)
         return [alpha_b, alpha_a], [alpha_b, alpha_a] # second tuple used in bptt
     
-    def act_loss(self, o, u, mask, forward_out):
+    def act_loss(self, o, u, mask, hidden):
         """ Compute action loss 
         
         Args:
             o (torch.tensor): observation sequence. size=[T, batch_size, obs_dim]
             u (torch.tensor): control sequence. size=[T, batch_size, ctl_dim]
             mask (torch.tensor): binary mask sequence. size=[T, batch_size]
-            forward_out (list): outputs of forward method
+            hidden (list): hidden outputs of forward method
 
         Returns:
             loss (torch.tensor): action loss. size=[batch_size]
             stats (dict): action loss stats
         """
-        _, alpha_a = forward_out[1]
+        _, alpha_a = hidden
         
         logp_u = torch.gather(torch.log(alpha_a + 1e-6), -1, u.long()).squeeze(-1)
         loss = -torch.sum(logp_u * mask, dim=0) / (mask.sum(0) + 1e-6)
@@ -147,20 +147,20 @@ class VINAgent(Model):
         stats = {"loss_u": logp_u_mean}
         return loss, stats
     
-    def obs_loss(self, o, u, mask, forward_out):
+    def obs_loss(self, o, u, mask, hidden):
         """ Compute observation loss 
         
         Args:
             o (torch.tensor): observation sequence. size=[T, batch_size, obs_dim]
             u (torch.tensor): control sequence. size=[T, batch_size, ctl_dim]
             mask (torch.tensor): binary mask tensor. size=[T, batch_size]
-            forward_out (list): outputs of forward method
+            hidden (list): hidden outputs of forward method
 
         Returns:
             loss (torch.tensor): observation loss. size=[batch_size]
             stats (dict): observation loss stats
         """
-        [alpha_b, _], _ = forward_out
+        alpha_b, _ = hidden
         logp_o = self.obs_model.mixture_log_prob(alpha_b, o)
         loss = -torch.sum(logp_o * mask, dim=0) / (mask.sum(0) + 1e-6)
         
