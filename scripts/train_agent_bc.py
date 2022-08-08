@@ -141,12 +141,16 @@ def main(arglist):
     with open(data_path, "rb") as f:
         dataset = pickle.load(f)
     print(f"loaded {len(dataset)} episodes of demonstrations")
-    
-    print(len(dataset))
 
     train_loader, test_loader = train_test_split(
         dataset, arglist.train_ratio, arglist.batch_size
     )
+    print(f"train size: {len(train_loader.dataset)}, test size: {len(test_loader.dataset)}")
+    
+    # compute obs mean and variance
+    obs_cat = np.vstack([d["obs"] for d in dataset])
+    obs_mean = obs_cat.mean(axis=0)
+    obs_variance = obs_cat.var(axis=0)
     
     obs_dim = 2
     act_dim = 3
@@ -154,7 +158,9 @@ def main(arglist):
         arglist.state_dim, act_dim, obs_dim, arglist.hmm_rank, arglist.horizon, 
         arglist.alpha, arglist.epsilon, arglist.obs_cov
     )
-
+    agent.obs_model.bn.moving_mean.data = torch.from_numpy(obs_mean).to(torch.float32)
+    agent.obs_model.bn.moving_variance.data = torch.from_numpy(obs_variance).to(torch.float32)
+    
     model = BehaviorCloning(
         agent, arglist.bptt_steps, arglist.obs_penalty, 
         arglist.lr, arglist.decay, arglist.grad_clip
