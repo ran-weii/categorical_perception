@@ -18,7 +18,7 @@ class DAC(Model):
     def __init__(
         self, agent, hidden_dim, num_hidden, activation, gamma=0.9, beta=0.2, polyak=0.995, use_state=False, norm_obs=False,
         buffer_size=int(1e6), d_batch_size=100, a_batch_size=32, rnn_len=50, d_steps=50, a_steps=50, 
-        lr_d=1e-3, lr_a=1e-3, lr_c=1e-3, decay=0, grad_clip=None, grad_penalty=1., bc_penalty=1., obs_penalty=1.
+        lr_d=1e-3, lr_a=1e-3, lr_c=1e-3, decay=0, grad_clip=None, grad_penalty=1., grad_target=1., bc_penalty=1., obs_penalty=1.
         ):
         """
         Args:
@@ -40,7 +40,8 @@ class DAC(Model):
             lr (float, optional): learning rate. Default=1e-3
             decay (float, optional): weight decay. Default=0
             grad_clip (float, optional): gradient clipping. Default=None
-            grad_penalty (float, optional): discriminator gradient penalty. Default=1.
+            grad_penalty (float, optional): discriminator gradient norm penalty. Default=1.
+            grad_target (float,optional): discriminator gradient norm target. Default=1.
         """
         super().__init__()
         self.gamma = gamma
@@ -59,10 +60,12 @@ class DAC(Model):
         self.decay = decay
         self.grad_clip = grad_clip
         self.grad_penalty = grad_penalty
+        self.grad_target = grad_target
         self.bc_penalty = bc_penalty
         self.obs_penalty = obs_penalty
         
         self.agent = agent
+        self.ref_agent = deepcopy(agent)
         
         # discriminator and critic input dim
         disc_input_dim = agent.obs_dim + agent.act_dim
@@ -147,7 +150,8 @@ class DAC(Model):
                 self.agent.obs_variance.data = variance
     
     def reset(self):
-        self.agent.reset()
+        # self.agent.reset()
+        self.ref_agent.reset()
     
     def normalize_obs(self, obs):
         obs_norm = (obs - self.obs_mean) / self.obs_variance**0.5
@@ -164,14 +168,9 @@ class DAC(Model):
     def choose_action(self, obs):
         obs = torch.from_numpy(obs).view(1, -1).to(torch.float32).to(self.device)
         with torch.no_grad():
-            ctl = self.agent.choose_action(obs)
+            # ctl = self.agent.choose_action(obs)
+            ctl = self.ref_agent.choose_action(obs)
         return ctl.squeeze(0).numpy()
-    
-    def compute_reward(self, state, obs, ctl):
-        inputs = self.concat_inputs(state, obs, ctl)
-        log_r = self.discriminator(inputs)
-        r = -log_r
-        return r
     
     def gradient_penalty(self, real_inputs, fake_inputs):
         # interpolate data
@@ -188,7 +187,7 @@ class DAC(Model):
         )[0]
 
         grad_norm = torch.linalg.norm(grad, dim=-1)
-        grad_pen = torch.pow(grad_norm - 1, 2).mean()
+        grad_pen = torch.pow(grad_norm - self.grad_target, 2).mean()
         return grad_pen
 
     def compute_discriminator_loss(self): 
@@ -221,6 +220,12 @@ class DAC(Model):
 
         gp = self.gradient_penalty(real_inputs, fake_inputs)
         return d_loss, gp
+    
+    def compute_reward(self, state, obs, ctl):
+        inputs = self.concat_inputs(state, obs, ctl)
+        log_r = self.discriminator(inputs)
+        r = -log_r
+        return r
 
     def compute_critic_loss(self):
         real_batch = self.replay_buffer.sample_random(self.d_batch_size)
@@ -305,8 +310,8 @@ class DAC(Model):
         ctl = pad_batch["ctl"].to(self.device)
         mask = mask.to(self.device)
         
-        out = self.agent(obs, ctl)
-        bc_loss, _ = self.agent.act_loss(obs, ctl, mask, out)
+        _, hidden = self.agent(obs, ctl)
+        bc_loss, _ = self.agent.act_loss(obs, ctl, mask, hidden)
         bc_loss = bc_loss.mean()
         return bc_loss
 
@@ -323,8 +328,8 @@ class DAC(Model):
         ctl = torch.cat([real_ctl, fake_ctl], dim=1)
         mask = torch.cat([real_mask, fake_mask], dim=1)
         
-        out = self.agent(obs, ctl)
-        obs_loss, _ = self.agent.obs_loss(obs, ctl, mask, out)
+        _, hidden = self.agent(obs, ctl)
+        obs_loss, _ = self.agent.obs_loss(obs, ctl, mask, hidden)
         obs_loss = obs_loss.mean()
         return obs_loss
 
@@ -414,7 +419,14 @@ class DAC(Model):
         return stats
 
     def on_epoch_end(self):
-        """ Update real buffer hidden states on epoch end """
+        # udpate ref agent
+        with torch.no_grad():
+            for p, p_target in zip(
+                self.agent.parameters(), self.ref_agent.parameters()
+            ):
+                p_target.data = p
+        
+        # Update real buffer hidden states on epoch end
         num_samples = min(self.a_batch_size, self.real_buffer.num_eps)
         eps_ids = np.random.choice(np.arange(self.real_buffer.num_eps), num_samples, replace=False)
         for i in eps_ids:

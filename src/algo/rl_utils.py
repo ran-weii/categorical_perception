@@ -70,7 +70,7 @@ def train(
         eps_return += reward
         eps_len += 1
         
-        state = model.agent._b.cpu().data.numpy()
+        state = model.ref_agent._b.cpu().data.numpy()
         model.replay_buffer(obs, ctl, state, reward, done)
         obs = next_obs
         
