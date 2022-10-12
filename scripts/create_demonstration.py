@@ -1,5 +1,7 @@
+import argparse
 import os
 import pickle
+import numpy as np
 import torch
 from src.env.mountain_car import CustomMountainCar
 from src.algo.planning import value_iteration
@@ -24,7 +26,7 @@ def episode(env, policy, max_steps=500):
         obs = next_obs
     return data
 
-def main():
+def main(arglist):
     seed = 0
     x_bins = 20
     v_bins = 20
@@ -36,25 +38,28 @@ def main():
     reward = torch.from_numpy(env.reward)
 
     gamma = 0.99 # discount factor
-    alpha = 10 # softmax temperature
+    beta = arglist.beta # softmax temperature
     max_iter = 2000
 
     q_soft, info = value_iteration(
-        transition_matrix, reward, gamma, softmax=True, alpha=alpha, max_iter=max_iter
+        transition_matrix, reward, gamma, softmax=True, alpha=beta, max_iter=max_iter
     )
     print(f"soft value iteration info: {info}")
     
     # expert policy
-    beta = 100
     policy = torch.softmax(beta * q_soft, dim=-1)
 
-    num_eps = 30
+    num_eps = arglist.num_eps
     max_steps = 500
     dataset = []
     for i in range(num_eps):
         data = episode(env, policy, max_steps=max_steps)
         dataset.append(data)
-
+    
+    # print demonstration stats
+    eps_len = [len(d["reward"]) for d in dataset]
+    print(f"demonstration performance: min={np.min(eps_len)}, max={np.max(eps_len)}, mean={np.mean(eps_len):.2f}")
+    
     save_path = "../data"
     if not os.path.exists(save_path):
         os.mkdir(save_path)
@@ -62,5 +67,16 @@ def main():
     with open(os.path.join(save_path, "data.p"), "wb") as f:
         pickle.dump(dataset, f)
 
+def parse_args():
+    bool_ = lambda x: x if isinstance(x, bool) else x == "True"
+    
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--beta", type=float, default=1000.)
+    parser.add_argument("--num_eps", type=float, default=30)
+    arglist = parser.parse_args()
+    return arglist
+
 if __name__ == "__main__":
-    main()
+    arglist = parse_args()
+    main(arglist)
