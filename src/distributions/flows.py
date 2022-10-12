@@ -42,6 +42,10 @@ class SimpleTransformedModule(TransformedDistribution):
 
 
 class BatchNormTransform(TransformModule):
+    """ Masked batchnorm transform adapted from pyro's implementation. 
+    Masks are inferred from observations assuming unmasked observations will not be exactly zero.
+    Otherwise we treat them as zero padded.
+    """
     domain = constraints.real
     codomain = constraints.real
     bijective = True
@@ -52,8 +56,6 @@ class BatchNormTransform(TransformModule):
         self.momentum = momentum
         self.epsilon = epsilon
         
-        # self.register_buffer('moving_mean', torch.zeros(input_dim))
-        # self.register_buffer('moving_variance', torch.ones(input_dim))
         self.moving_mean = nn.Parameter(torch.zeros(input_dim), requires_grad=False)
         self.moving_variance = nn.Parameter(torch.ones(input_dim), requires_grad=False)
         
@@ -74,7 +76,9 @@ class BatchNormTransform(TransformModule):
         op_dims = [i for i in range(len(y.shape) - 1)]
         
         if self.training:
-            mean, var = y.mean(op_dims), y.var(op_dims)
+            mask = 1. - 1. * torch.all(y == 0, dim=-1, keepdim=True)
+            mean = torch.sum(mask * y, dim=op_dims) / (mask.sum(op_dims) + 1e-6)
+            var = torch.sum(mask * (y - mean)**2, dim=op_dims) / (mask.sum(op_dims) + 1e-6)
             with torch.no_grad():
                 self.moving_mean.mul_(1 - self.momentum).add_(mean * self.momentum)
                 self.moving_variance.mul_(1 - self.momentum).add_(var * self.momentum)
@@ -87,7 +91,9 @@ class BatchNormTransform(TransformModule):
     def log_abs_det_jacobian(self, x, y):
         op_dims = [i for i in range(len(y.shape) - 1)]
         if self.training:
-            var = torch.var(y, dim=op_dims, keepdim=True)
+            mask = 1. - 1. * torch.all(y == 0, dim=-1, keepdim=True)
+            mean = torch.sum(mask * y, dim=op_dims, keepdim=True) / (mask.sum(op_dims) + 1e-6)
+            var = torch.sum(mask * (y - mean)**2, dim=op_dims, keepdim=True) / (mask.sum(op_dims) + 1e-6)
         else:
             var = self.moving_variance
         return -self.constrained_gamma.log() + 0.5 * torch.log(var + self.epsilon)
