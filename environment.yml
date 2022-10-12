@@ -65,4 +65,4 @@ dependencies:
   - xz=5.2.5=hca72f7f_1
   - zlib=1.2.12=h4dc903c_2
   - zstd=1.5.2=hcb37349_0
-prefix: /Users/rw422/miniconda3/envs/cat_perception
+prefix: /Users/hfml/miniconda3/envs/cat_perception
