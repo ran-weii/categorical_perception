@@ -32,14 +32,12 @@ class QMDPLayer(nn.Module):
             self.__class__.__name__, self.state_dim, self.act_dim, self.rank, self.horizon
         )
         return s
-
-    @property
-    def transition(self):
+    
+    def compute_transition(self):
         """ Return transition matrix. size=[1, act_dim, state_dim, state_dim] """
         w = torch.einsum("nri, nrj, nrk -> nkij", self.u, self.v, self.w)
         return torch.softmax(w, dim=-1)
     
-    # @jit.script_method
     def compute_value(self, transition: Tensor, reward: Tensor) -> Tensor:
         """ Compute expected value using value iteration
 
@@ -57,7 +55,6 @@ class QMDPLayer(nn.Module):
             q[t+1] = reward + torch.einsum("nkij, nkj -> nki", transition, v_next)
         return torch.stack(q)
     
-    # @jit.script_method
     def plan(self, b: Tensor, value: Tensor) -> Tensor:
         """ Compute the belief action distribution 
         
@@ -76,8 +73,7 @@ class QMDPLayer(nn.Module):
         a = torch.softmax(torch.einsum("...ni, h...nki -> h...nk", b, value), dim=-1)
         a = torch.einsum("h...nk, nh -> ...nk", a, tau)
         return a
-
-    # @jit.script_method
+    
     def update_belief(self, logp_o: Tensor, transition: Tensor, b: Tensor, a: Tensor) -> Tensor:
         """ Compute state posterior
         
@@ -95,7 +91,6 @@ class QMDPLayer(nn.Module):
         b_post = torch.softmax(logp_s + logp_o, dim=-1)
         return b_post
     
-    # @jit.script_method
     def update_action(self, logp_u: Tensor, a: Tensor) -> Tensor:
         """ Compute action posterior 
         
@@ -110,7 +105,6 @@ class QMDPLayer(nn.Module):
         a_post = torch.softmax(logp_a + logp_u, dim=-1)
         return a_post
     
-    # @jit.script_method
     def update_cell(
         self, logp_o: Tensor, u: Tensor, b: Tensor, 
         transition: Tensor, value: Tensor
@@ -120,7 +114,6 @@ class QMDPLayer(nn.Module):
         a_next = self.plan(b_post, value)
         return (b_post, a_next)
     
-    # @jit.script_method
     def init_hidden(self, logp_o: Tensor, value: Tensor) -> Tuple[Tensor, Tensor]:
         b0 = torch.softmax(self.b0, dim=-1)
         logp_s = torch.log(b0 + self.eps)
@@ -129,7 +122,7 @@ class QMDPLayer(nn.Module):
         return b, a
     
     def forward(
-        self, logp_o: Tensor, u: Union[Tensor, None], reward: Tensor,
+        self, logp_o: Tensor, u: Union[Tensor, None], value: Tensor,
         b: Union[Tensor, None], a: Union[Tensor, None]
         ) -> Tuple[Tensor, Tensor]:
         """
@@ -137,7 +130,7 @@ class QMDPLayer(nn.Module):
             logp_o (torch.tensor): sequence of observation probabilities. size=[T, batch_size, state_dim]
             u (torch.tensor): sequence of control probabilities. Should be offset -1 if b is None.
                 size=[T, batch_size, act_dim]
-            reward (torch.tensor): reward matrix. size=[batch_size, act_dim, state_dim]
+            value (torch.tensor): precomputed q value matrix. size=[batch_size, act_dim, state_dim]
             b ([torch.tensor, None], optional): prior belief. size=[batch_size, state_dim]
             a ([torch.tensor, None], optional): prior action. size=[batch_size, act_dim]
         
@@ -145,8 +138,7 @@ class QMDPLayer(nn.Module):
             alpha_b (torch.tensor): sequence of posterior belief. size=[T, batch_size, state_dim]
             alpha_a (torch.tensor): sequence of action distribution. size=[T, batch_size, act_dim]
         """
-        transition = self.transition
-        value = self.compute_value(transition, reward)
+        transition = self.compute_transition()
         t_offset = 0 if b is not None else -1 # offset for offline prediction
         T = len(logp_o)
 
