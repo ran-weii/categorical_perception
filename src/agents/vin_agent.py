@@ -38,7 +38,7 @@ class VINAgent(Model):
     
     def reset(self):
         """ Reset internal states for online inference """
-        self._b = None # torch.ones(1, self.state_dim)
+        self._b = None # previous belief distribution
         self._a = None # previous action distribution
         self._prev_ctl = None # size=[1, batch_size, act_dim]
         self._value = None # precomputed value
@@ -78,6 +78,7 @@ class VINAgent(Model):
             alpha_b (torch.tensor): state belief distributions. size=[T, batch_size, state_dim]
             alpha_a (torch.tensor): action predictive distributions. size=[T, batch_size, act_dim]
         """
+        batch_size = o.shape[1]
         b, a = None, None
         if hidden is not None:
             b, a = hidden
@@ -86,14 +87,14 @@ class VINAgent(Model):
         if u is not None:
             u_oh = F.one_hot(u.long(), self.act_dim).squeeze(-2).to(torch.float32).to(self.device)
         else:
-            u_oh = u
+            u_oh = torch.ones(1, batch_size, self.act_dim).to(self.device) / self.act_dim
         
         if value is None:
             transition = self.rnn.compute_transition()
             reward = self.compute_reward()
             value = self.rnn.compute_value(transition, reward)
 
-        alpha_b, alpha_a = self.rnn(logp_o, u_oh, value, b, a)
+        alpha_b, alpha_a = self.rnn(logp_o, u_oh, value, b)
         return [alpha_b, alpha_a], [alpha_b, alpha_a, value] # second tuple used in bptt
     
     def act_loss(self, o, u, mask, hidden):
@@ -135,11 +136,15 @@ class VINAgent(Model):
             stats (dict): observation loss stats
         """
         alpha_b, _, _ = hidden
-        logp_o = self.obs_model.mixture_log_prob(alpha_b, o)
-        loss = -torch.sum(logp_o * mask, dim=0) / (mask.sum(0) + 1e-6)
+
+        # one step transition
+        u_oh = F.one_hot(u.long(), num_classes=self.act_dim).squeeze(-2).to(torch.float32)
+        s_next = self.rnn.predict_one_step(alpha_b, u_oh)
+        logp_o = self.obs_model.mixture_log_prob(s_next[:-1], o[1:])
+        loss = -torch.sum(logp_o * mask[1:], dim=0) / (mask[1:].sum(0) + 1e-6)
         
         # compute stats
-        nan_mask = mask.clone()
+        nan_mask = mask[1:].clone()
         nan_mask[nan_mask == 0] = torch.nan
         logp_o_mean = -torch.nanmean((nan_mask * logp_o)).cpu().data
         stats = {"loss_o": logp_o_mean}

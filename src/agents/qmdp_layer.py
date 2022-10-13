@@ -72,25 +72,25 @@ class QMDPLayer(nn.Module):
             value (torch.tensor): state q value. size=[horizon, batch_size, act_dim, state_dim]
 
         Returns:
-            a (torch.tensor): action distribution. size=[batch_size, act_dim]
+            pi (torch.tensor): policy distribution. size=[batch_size, act_dim]
         """
         tau = torch.exp(self.tau.clip(math.log(1e-6), math.log(1e3)))
         tau = poisson_pdf(tau, self.horizon)
         if tau.shape[0] != b.shape[-2]:
             tau = torch.repeat_interleave(tau, b.shape[-2], 0)
         
-        a = torch.softmax(torch.einsum("...ni, h...nki -> h...nk", b, value), dim=-1)
-        a = torch.einsum("h...nk, nh -> ...nk", a, tau)
-        return a
+        pi = torch.softmax(torch.einsum("...ni, h...nki -> h...nk", b, value), dim=-1)
+        pi = torch.einsum("h...nk, nh -> ...nk", pi, tau)
+        return pi
     
-    def update_belief(self, logp_o: Tensor, transition: Tensor, b: Tensor, a: Tensor) -> Tensor:
+    def update_belief(self, logp_o: Tensor, a: Tensor, b: Tensor, transition: Tensor) -> Tensor:
         """ Compute state posterior
         
         Args:
             logp_o (torch.tensor): log probability of current observation. size=[batch_size, state_dim]
-            transition (torch.tensor): transition matrix. size=[batch_size, act_dim, state_dim, state_dim]
-            b (torch.tensor): prior belief. size=[batch_size, state_dim]
             a (torch.tensor): action posterior. size=[batch_size, act_dim]
+            b (torch.tensor): prior belief. size=[batch_size, state_dim]
+            transition (torch.tensor): transition matrix. size=[batch_size, act_dim, state_dim, state_dim]
 
         Returns:
             b_post (torch.tensor): state posterior. size=[batch_size, state_dim]
@@ -100,68 +100,46 @@ class QMDPLayer(nn.Module):
         b_post = torch.softmax(logp_s + logp_o, dim=-1)
         return b_post
     
-    def update_action(self, logp_u: Tensor, a: Tensor) -> Tensor:
-        """ Compute action posterior 
-        
-        Args:
-            logp_u (torch.tensor): log probability of previous control. size=[batch_size, act_dim]
-            a (torch.tensor): action prior. size=[batch_size, act_dim]
-
-        Returns:
-            a_post (torch.tensor): action posterior. size=[batch_size, act_dim]
-        """ 
-        logp_a = torch.log(a + self.eps)
-        a_post = torch.softmax(logp_a + logp_u, dim=-1)
-        return a_post
-    
-    def update_cell(
-        self, logp_o: Tensor, u: Tensor, b: Tensor, 
-        transition: Tensor, value: Tensor
-        ) -> Tuple[Tensor, Tensor]:
-        """ Compute action and state posterior. Then compute the next action distribution """
-        b_post = self.update_belief(logp_o, transition, b, u)
-        a_next = self.plan(b_post, value)
-        return (b_post, a_next)
-    
-    def init_hidden(self, logp_o: Tensor, value: Tensor) -> Tuple[Tensor, Tensor]:
+    def init_hidden(self) -> Tensor:
         b0 = torch.softmax(self.b0, dim=-1)
-        logp_s = torch.log(b0 + self.eps)
-        b = torch.softmax(logp_s + logp_o, dim=-1)
-        a = self.plan(b, value)
-        return b, a
+        return b0
     
+    def predict_one_step(self, b, u):
+        transition = self.compute_transition()
+        s_next = torch.einsum("...kij, ...i, ...k -> ...j", transition, b, u)
+        return s_next
+
     def forward(
         self, logp_o: Tensor, u: Union[Tensor, None], value: Tensor,
-        b: Union[Tensor, None], a: Union[Tensor, None]
+        b: Union[Tensor, None]
         ) -> Tuple[Tensor, Tensor]:
         """
         Args:
             logp_o (torch.tensor): sequence of observation probabilities. size=[T, batch_size, state_dim]
-            u (torch.tensor): sequence of control probabilities. Should be offset -1 if b is None.
-                size=[T, batch_size, act_dim]
+            u (torch.tensor): sequence of one-hot action vectors. size=[T, batch_size, act_dim]
             value (torch.tensor): precomputed q value matrix. size=[batch_size, act_dim, state_dim]
             b ([torch.tensor, None], optional): prior belief. size=[batch_size, state_dim]
-            a ([torch.tensor, None], optional): prior action. size=[batch_size, act_dim]
         
         Returns:
             alpha_b (torch.tensor): sequence of posterior belief. size=[T, batch_size, state_dim]
-            alpha_a (torch.tensor): sequence of action distribution. size=[T, batch_size, act_dim]
+            alpha_pi (torch.tensor): sequence of policy distribution. size=[T, batch_size, act_dim]
         """
+        batch_size = logp_o.shape[1]
         transition = self.compute_transition()
-        t_offset = 0 if b is not None else -1 # offset for offline prediction
         T = len(logp_o)
 
-        alpha_b = [b] + [torch.empty(0)] * (T)
-        alpha_a = [a] + [torch.empty(0)] * (T)
+        if b is None:
+            b = self.init_hidden()
+            u = torch.cat([torch.ones(1, batch_size, self.act_dim).to(self.b0.device) / self.act_dim, u], dim=0)
+        
+        alpha_b = [b] + [torch.empty(0)] * (T) # state posterior
+        alpha_pi = [torch.empty(0)] * (T) # policy
         for t in range(T):
-            if alpha_b[t] is None:
-                alpha_b[t+1], alpha_a[t+1] = self.init_hidden(logp_o[t], value)
-            else:
-                alpha_b[t+1], alpha_a[t+1] = self.update_cell(
-                    logp_o[t], u[t+t_offset], 
-                    alpha_b[t], transition, value
-                )
-        return torch.stack(alpha_b[1:]), torch.stack(alpha_a[1:])
+            alpha_b[t+1] = self.update_belief(
+                logp_o[t], u[t], alpha_b[t], transition
+            )
+            alpha_pi[t] = self.plan(alpha_b[t+1], value)
+        return torch.stack(alpha_b[1:]), torch.stack(alpha_pi)
 
 
 def poisson_pdf(rate: Tensor, K: int) -> Tensor:
