@@ -7,7 +7,7 @@ def collate_fn(batch):
     assert isinstance(batch[0], dict)
     keys = list(batch[0].keys())
     pad_batch = {k: pad_sequence([b[k] for b in batch]) for k in keys}
-    mask = torch.all(pad_batch[keys[0]] != 0, dim=-1).to(torch.float32)
+    mask = pad_sequence([torch.ones(len(b[keys[0]])) for b in batch])
     return pad_batch, mask
 
 def sample_sequence(seq_len, max_seq_len, gamma=1.):
