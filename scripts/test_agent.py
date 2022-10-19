@@ -11,7 +11,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--exp_path", type=str, default="../exp")
     parser.add_argument("--exp_name", type=str, default="")
-    parser.add_argument("--num_eps", type=int, default=30)
+    parser.add_argument("--num_eps", type=int, default=3)
     arglist = parser.parse_args()
     return arglist
 
@@ -23,10 +23,9 @@ def episode(env, agent, max_steps=500):
     obs = env.reset()
     
     for t in range(max_steps):
-        # s = env.obs2state(obs)[0]
         obs_tensor = torch.from_numpy(obs).view(1, -1).to(torch.float32)
-        a = agent.choose_action(obs_tensor).numpy()[0]
-        # a = torch.multinomial(pi, 1).numpy()[0]
+        with torch.no_grad():
+            a = agent.choose_action(obs_tensor).numpy()[0]
 
         next_obs, reward, done, into = env.step(a)
 
@@ -39,6 +38,8 @@ def episode(env, agent, max_steps=500):
         if done:
             break
         obs = next_obs
+
+        env.render()
     return data
 
 def main(arglist):
@@ -53,7 +54,7 @@ def main(arglist):
     
     # load state dict
     state_dict = torch.load(os.path.join(exp_path, "model.pt"), map_location=torch.device("cpu"))
-    state_dict = {k.replace("agent.", ""): v for (k, v) in state_dict.items() if "agent." in k}
+    state_dict = {k.replace("agent.", ""): v for (k, v) in state_dict.items() if "agent." in k and "ref" not in k}
 
     obs_dim = 2
     act_dim = 3
