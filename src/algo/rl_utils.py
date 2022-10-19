@@ -61,10 +61,10 @@ def train(
     
     model.reset()
     epoch = 0
-    obs, eps_return, eps_len = env.reset(), 0, 0
+    obs, eps_return, eps_len, done = env.reset(), 0, 0, False
     for t in range(total_steps):
         ctl = model.choose_action(obs)
-        next_obs, reward, done, info = env.step(ctl)
+        next_obs, reward, next_done, info = env.step(ctl)
         if custom_reward is not None:
             reward = custom_reward(next_obs)
         eps_return += reward
@@ -73,13 +73,15 @@ def train(
         state = model.ref_agent._b.cpu().data.numpy()
         model.replay_buffer(obs, ctl, state, reward, done)
         obs = next_obs
+        done = next_done
         
-        # env done handeling
-        if (eps_len + 1) >= max_steps:
-            done = True
-            
         # end of trajectory handeling
-        if done:
+        if done or (eps_len  + 1) >= max_steps:
+            # collect terminal step
+            ctl = model.choose_action(obs)
+            state = model.ref_agent._b.cpu().data.numpy()
+            model.replay_buffer(obs, ctl, state, reward, done)
+
             model.replay_buffer.push()
             logger.push({"eps_return": eps_return/eps_len})
             logger.push({"eps_len": eps_len})
