@@ -7,21 +7,24 @@ from src.env.mountain_car import CustomMountainCar
 from src.algo.planning import value_iteration
 
 def episode(env, policy, max_steps=500):
-    data = {"obs": [], "act": [], "reward": []}
+    data = {"obs": [], "act": [], "reward": [], "done": []}
     obs = env.reset()
+    done = False
     for t in range(max_steps):
         s = env.obs2state(obs)[0]
         a = torch.multinomial(policy[s], 1).numpy()[0]
 
-        next_obs, reward, done, into = env.step(a)
+        next_obs, reward, next_done, info = env.step(a)
 
         data["obs"].append(obs)
         data["act"].append(a)
         data["reward"].append(reward)
+        data["done"].append(done)
         
-        if done:
+        if next_done:
             break
         obs = next_obs
+        done = next_done
     
     # collect final time step
     s = env.obs2state(next_obs)[0]
@@ -29,6 +32,7 @@ def episode(env, policy, max_steps=500):
     data["obs"].append(next_obs)
     data["act"].append(a)
     data["reward"].append(reward)
+    data["done"].append(next_done)
     return data
 
 def main(arglist):
