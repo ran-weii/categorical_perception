@@ -27,18 +27,14 @@ class ConditionalGaussian(nn.Module):
         nn.init.normal_(self.mu, mean=0, std=1)
 
         if cov == "full":
-            self.lv = nn.Parameter(torch.randn(1, z_dim, x_dim), requires_grad=True)
-            self.tl = nn.Parameter(torch.randn(1, z_dim, x_dim, x_dim), requires_grad=True)
-            nn.init.normal_(self.lv, mean=0, std=0.01)
-            nn.init.normal_(self.tl, mean=0, std=0.01)
+            self.lv = nn.Parameter(torch.zeros(1, z_dim, x_dim), requires_grad=True)
+            self.tl = nn.Parameter(torch.zeros(1, z_dim, x_dim, x_dim), requires_grad=True)
         elif cov == "diag":
-            self.lv = nn.Parameter(torch.randn(1, z_dim, x_dim), requires_grad=True)
+            self.lv = nn.Parameter(torch.zeros(1, z_dim, x_dim), requires_grad=True)
             self.tl = nn.Parameter(torch.zeros(1, z_dim, x_dim, x_dim), requires_grad=False)
-            nn.init.normal_(self.lv, mean=0, std=0.01)
         elif cov == "tied":
-            self.lv = nn.Parameter(torch.randn(1, 1, x_dim), requires_grad=True)
+            self.lv = nn.Parameter(torch.zeros(1, 1, x_dim), requires_grad=True)
             self.tl = nn.Parameter(torch.zeros(1, z_dim, x_dim, x_dim), requires_grad=False)
-            nn.init.normal_(self.lv, mean=0, std=0.01)
         
         if batch_norm:
             self.bn = BatchNormTransform(x_dim, momentum=0.1, affine=False, update_stats=False)
