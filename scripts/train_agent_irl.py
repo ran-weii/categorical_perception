@@ -11,7 +11,6 @@ import torch
 from src.env.mountain_car import CustomMountainCar
 from src.agents.vin_agent import VINAgent
 from src.algo.irl import DAC
-from src.algo.firl import FIRL
 from src.algo.rl_utils import train
 
 def parse_args():
@@ -29,7 +28,7 @@ def parse_args():
     parser.add_argument("--epsilon", type=float, default=1.)
     parser.add_argument("--obs_cov", type=str, choices=["full", "diag", "tied"], default="full")
     # algo args
-    parser.add_argument("--algo", type=str, choices=["dac", "firl"], default="dac")
+    parser.add_argument("--algo", type=str, choices=["dac"], default="dac")
     parser.add_argument("--hidden_dim", type=int, default=64, help="neural network hidden dims, default=64")
     parser.add_argument("--num_hidden", type=int, default=2, help="number of hidden layers, default=2")
     parser.add_argument("--activation", type=str, default="relu", help="neural network activation, default=relu")
@@ -52,6 +51,7 @@ def parse_args():
     parser.add_argument("--decay", type=float, default=1e-5, help="weight decay, default=0")
     parser.add_argument("--grad_clip", type=float, default=1000., help="gradient clipping, default=1000.")
     parser.add_argument("--grad_penalty", type=float, default=0.1, help="discriminator gradient penalty, default=0.1")
+    parser.add_argument("--grad_target", type=float, default=1., help="discriminator gradient norm target, default=1.")
     parser.add_argument("--bc_penalty", type=float, default=1., help="behavior cloning penalty, default=1.")
     parser.add_argument("--obs_penalty", type=float, default=0.1, help="observation penalty, default=0.1")
     # rollout args
@@ -82,7 +82,7 @@ def plot_history(df_history, plot_keys, plot_std=True):
     width = min(4 * num_cols, 15)
     fig, ax = plt.subplots(1, num_cols, figsize=(width, 4))
     for i in range(num_cols):
-        ax[i].plot(df_history["epoch"], df_history[plot_keys[i]], label="train")
+        ax[i].plot(df_history["epoch"], df_history[plot_keys[i]])
         if plot_std:
             std = df_history[plot_keys[i].replace("_avg", "_std")]
             ax[i].fill_between(
@@ -91,8 +91,7 @@ def plot_history(df_history, plot_keys, plot_std=True):
                 df_history[plot_keys[i]] + std,
                 alpha=0.4
             )
-
-        ax[i].legend()
+        
         ax[i].set_xlabel("epoch")
         ax[i].set_ylabel(plot_keys[i])
         ax[i].grid()
@@ -125,6 +124,8 @@ class SaveCallback:
         self.iter = 0
 
     def __call__(self, model, logger):
+        self.iter += 1
+        
         # save history
         df_history = pd.DataFrame(logger.history)
         if self.cp_history is not None:
@@ -144,7 +145,6 @@ class SaveCallback:
             # save model
             torch.save(model.state_dict(), os.path.join(self.model_path, f"model_{self.iter}.pt"))
             print(f"\ncheckpoint saved at: {self.save_path}\n")
-        self.iter += 1
     
     def save_model(self, model):
         torch.save(model.state_dict(), os.path.join(self.save_path, "model.pt"))
@@ -158,6 +158,11 @@ def main(arglist):
     with open(data_path, "rb") as f:
         dataset = pickle.load(f)
     print(f"loaded {len(dataset)} episodes of demonstrations")
+
+    # compute observation stats
+    obs = np.vstack([d["obs"] for d in dataset])
+    obs_mean = np.mean(obs, axis=0)
+    obs_var = np.var(obs, axis=0)
     
     env = CustomMountainCar()
     obs_dim = env.observation_space.low.shape[0]
@@ -166,6 +171,11 @@ def main(arglist):
     agent = VINAgent(
         arglist.state_dim, act_dim, obs_dim, arglist.hmm_rank, 
         arglist.horizon, arglist.alpha, arglist.epsilon, obs_cov=arglist.obs_cov
+    )
+    # init batch norm stats
+    agent.obs_model.init_batch_norm(
+        torch.from_numpy(obs_mean).to(torch.float32).to(agent.device),
+        torch.from_numpy(obs_var).to(torch.float32).to(agent.device)
     )
     
     if arglist.algo == "dac":
@@ -177,23 +187,10 @@ def main(arglist):
             rnn_len=arglist.rnn_len, d_steps=arglist.d_steps, a_steps=arglist.a_steps, 
             lr_d=arglist.lr_d, lr_a=arglist.lr_a, lr_c=arglist.lr_c, 
             decay=arglist.decay, grad_clip=arglist.grad_clip, 
-            grad_penalty=arglist.grad_penalty, bc_penalty=arglist.bc_penalty, 
-            obs_penalty=arglist.obs_penalty
+            grad_penalty=arglist.grad_penalty, grad_target=arglist.grad_target,
+            bc_penalty=arglist.bc_penalty, obs_penalty=arglist.obs_penalty
         )
         plot_keys = ["eps_len_avg", "d_loss_avg", "critic_loss_avg", "actor_loss_avg", "bc_loss_avg", "obs_loss_avg"]
-    elif arglist.algo == "firl":
-        model = FIRL(
-            agent, arglist.hidden_dim, arglist.num_hidden, arglist.activation,
-            gamma=arglist.gamma, beta=arglist.beta, polyak=arglist.polyak,
-            norm_obs=arglist.norm_obs, buffer_size=arglist.buffer_size,
-            d_batch_size=arglist.d_batch_size, a_batch_size=arglist.a_batch_size, 
-            rnn_len=arglist.rnn_len, reward_steps=arglist.reward_steps, 
-            d_steps=arglist.d_steps, a_steps=arglist.a_steps, 
-            lr_d=arglist.lr_d, lr_a=arglist.lr_a, lr_c=arglist.lr_c, 
-            decay=arglist.decay, grad_clip=arglist.grad_clip, 
-            grad_penalty=arglist.grad_penalty, obs_penalty=arglist.obs_penalty
-        )
-        plot_keys = ["eps_len_avg", "d_loss_avg", "r_loss_avg", "critic_loss_avg", "actor_loss_avg", "obs_loss_avg"]
     
     cp_history = None
     if arglist.cp_path != "none":
@@ -221,7 +218,9 @@ def main(arglist):
         steps_per_epoch=arglist.steps_per_epoch, update_after=arglist.update_after, 
         update_every=arglist.update_every, verbose=arglist.verbose, callback=callback
     )
-    callback.save_model(model)
+    
+    if arglist.save:
+        callback.save_model(model)
 
 if __name__ == "__main__":
     arglist = parse_args()
