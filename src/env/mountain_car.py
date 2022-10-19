@@ -22,11 +22,14 @@ class CustomMountainCar(MountainCarEnv):
 
         self.x_noise = x_noise
         self.v_noise = v_noise
-        
-        # make reward
+
+        # all states with pos >= 0.5 are reward states
         goal_velocity = np.linspace(self.low[1], self.high[1], self.v_bins)
-        goal_position = self.goal_position * np.ones_like(goal_velocity)
-        goal_obs = np.stack([goal_position, goal_velocity]).T
+        goal_position_0 = self.goal_position * np.ones_like(goal_velocity)
+        goal_position_1 = (0.6) * np.ones_like(goal_velocity)
+        goal_obs_0 = np.stack([goal_position_0, goal_velocity]).T
+        goal_obs_1 = np.stack([goal_position_1, goal_velocity]).T
+        goal_obs = np.vstack([goal_obs_0, goal_obs_1])
         goal_state = self.obs2state(goal_obs)
         self.reward = -np.ones((self.state_dim,))
         self.reward[goal_state] = 0
