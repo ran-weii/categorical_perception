@@ -24,7 +24,7 @@ class ConditionalGaussian(nn.Module):
         self.eps = 1e-6
         
         self.mu = nn.Parameter(torch.randn(1, z_dim, x_dim), requires_grad=True)
-        nn.init.normal_(self.mu, mean=0, std=1)
+        nn.init.uniform_(self.mu, a=-1., b=1.)
 
         if cov == "full":
             self.lv = nn.Parameter(torch.zeros(1, z_dim, x_dim), requires_grad=True)

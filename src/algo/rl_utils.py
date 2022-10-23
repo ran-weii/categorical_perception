@@ -76,7 +76,7 @@ def train(
         done = next_done
         
         # end of trajectory handeling
-        if done or (eps_len  + 1) >= max_steps:
+        if done or (eps_len + 1) >= max_steps:
             # collect terminal step
             ctl = model.choose_action(obs)
             state = model.ref_agent._b.cpu().data.numpy()
@@ -87,7 +87,7 @@ def train(
             logger.push({"eps_len": eps_len})
             
             model.reset()
-            obs, eps_return, eps_len = env.reset(), 0, 0
+            obs, eps_return, eps_len, done = env.reset(), 0, 0, False
 
         # train model
         if t >= update_after and t % update_every == 0:
